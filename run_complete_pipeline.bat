@@ -58,7 +58,7 @@ echo   figures/   - Visualizations and research plots
 echo.
 echo Key outputs:
 echo   - Balanced hate speech dataset
-echo   - BERT embeddings and user features  
+echo   - BERT embeddings and user features
 echo   - Temporal graph structure
 echo   - Trained TGNN models (TGAT/TGN)
 echo   - Diffusion prediction results

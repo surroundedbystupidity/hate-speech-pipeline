@@ -11,6 +11,7 @@ from collections import Counter, defaultdict, deque
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import joblib
 import networkx as nx
 import numpy as np
 import pandas as pd
@@ -21,7 +22,6 @@ from sklearn.decomposition import PCA, TruncatedSVD
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics import average_precision_score
 from tqdm import tqdm
-import joblib
 
 # Optional TGNN dependency
 sys.path.append(str(Path(__file__).parent.parent))
@@ -247,7 +247,7 @@ class TGNNDiffusionPredictor:
 
         self.all_df = pd.concat([self.train_df, self.val_df, self.test_df], ignore_index=True)
         print(f"    Total data: {len(self.all_df)} comments")
-        
+
         self.preprocess_data()
         self.prepare_text_encoders()
 
@@ -1086,7 +1086,7 @@ class FocalLoss(nn.Module):
         if not edges:
             return None
         from torch_geometric.data import TemporalData
-            
+
         x = torch.tensor(node_features, dtype=torch.float32)
         edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
         edge_attr = torch.tensor(edge_attr, dtype=torch.float32)
@@ -1116,7 +1116,7 @@ class FocalLoss(nn.Module):
             static_data.edge_time = temporal_data.edge_time.cpu()
         static_data.num_nodes = temporal_data.x.shape[0]
         return static_data
-    
+
     def train_tgnn_model(self, temporal_data):
         if not self.use_tgnn or temporal_data is None:
             return None
@@ -1516,7 +1516,7 @@ class FocalLoss(nn.Module):
                 return []
             merged = []
             current = windows[0].copy()
-            
+
             for i in range(1, len(windows)):
                 if current['num_hate'] >= min_hate:
                     merged.append(current)
@@ -1528,7 +1528,7 @@ class FocalLoss(nn.Module):
                     current['num_comments'] += next_window['num_comments']
                     current['num_hate'] += next_window['num_hate']
                     current['end_time'] = next_window['end_time']
-            
+
             # 处理最后一个窗口
             if current['num_hate'] >= min_hate:
                 merged.append(current)
@@ -1537,12 +1537,12 @@ class FocalLoss(nn.Module):
                 merged[-1]['num_comments'] += current['num_comments']
                 merged[-1]['num_hate'] += current['num_hate']
                 merged[-1]['end_time'] = current['end_time']
-            
+
             return merged
-        
+
         val_windows = merge_windows_for_hate(val_windows, min_hate_per_window)
         test_windows = merge_windows_for_hate(test_windows, min_hate_per_window)
-        
+
         # 确保至少有1个窗口
         if not train_windows or not val_windows or not test_windows:
             print("    Insufficient windows after merging, using fallback split...")
@@ -1554,7 +1554,7 @@ class FocalLoss(nn.Module):
                 train_windows = usable_windows
                 val_windows = []
                 test_windows = []
-        
+
         return train_windows, val_windows, test_windows
 
     def build_network_state(self, train_windows) -> None:
@@ -2190,7 +2190,7 @@ def main():
     print("=== TGNN-Enhanced CSV Diffusion Prediction ===")
     print("    [OK] Using CSV supervision data with TGNN integration")
     print("        Enhanced with temporal graph neural networks")
-    
+
     script_dir = Path(__file__).parent
     predictor = TGNNDiffusionPredictor(
         data_dir=script_dir,
@@ -2209,7 +2209,7 @@ def main():
     )
     predictor.load_data()
     results = predictor.run_global_hate_prediction()
-    
+
     print()
     print("=== Global Hate Speech Prediction Results ===")
     if "global_hate" in results:
@@ -2232,7 +2232,7 @@ def main():
     with open("global_hate_prediction_results.json", "w") as f:
         json.dump(results, f, indent=2, default=str)
     print("    Results saved to global_hate_prediction_results.json")
-    
+
 
 if __name__ == "__main__":
     main()

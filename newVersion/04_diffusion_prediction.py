@@ -4,33 +4,40 @@ Step 4 - Results Analysis Script for Reddit Hate Speech Analysis.
 Implements comprehensive results analysis including n-grams, predictions, and temporal dynamics.
 """
 
-import torch
-import torch.nn.functional as F
-import numpy as np
-import pandas as pd
-import networkx as nx
 import argparse
-import sys
-from pathlib import Path
-import yaml
 import json
 import pickle
-from tqdm import tqdm
-from sklearn.metrics import jaccard_score, accuracy_score, precision_score, recall_score, f1_score
+import re
+import sys
+import warnings
+from collections import Counter, defaultdict
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+import networkx as nx
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn.functional as F
+import yaml
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    jaccard_score,
+    precision_score,
+    recall_score,
+)
 from sklearn.preprocessing import StandardScaler
-import numpy as np
-from collections import defaultdict, Counter
-from typing import List, Dict, Tuple
-import re
-import warnings
+from tqdm import tqdm
+
 warnings.filterwarnings('ignore')
 
 # Import TGNN model for advanced predictions
 try:
-    import sys
     import importlib.util
+    import sys
 
     # Load 03_tgnn_model dynamically
     spec = importlib.util.spec_from_file_location("tgnn_model", "03_tgnn_model.py")
@@ -46,7 +53,7 @@ except Exception as e:
 
 # Cross-encoder imports (optional, for advanced reranking)
 try:
-    from transformers import AutoTokenizer, AutoModelForSequenceClassification
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
     _ce_ok = True
 except ImportError:
     _ce_ok = False
@@ -130,7 +137,7 @@ def load_csv_robust(path):
 
 class Step4ResultsAnalyzer:
     """Step 4 - Comprehensive Results Analysis."""
-    
+
     def __init__(self, config):
         self.config = config
         self.artifacts_dir = Path(config['paths']['artifacts_dir'])
@@ -150,7 +157,7 @@ class Step4ResultsAnalyzer:
             return 0
         except (ValueError, TypeError):
             return 0
-        
+
     def load_data(self):
         """Load data from CSV files."""
         print("Loading data from CSV files...")
@@ -182,29 +189,29 @@ class Step4ResultsAnalyzer:
             print(f"Selected {len(selected_threads)} threads with {len(self.comments_df)} comments")
         else:
             self.comments_df = combined_df
-        
+
         # Add cardiffnlp_label column (hate detection based on keywords)
         self.comments_df['cardiffnlp_label'] = self.comments_df['body'].apply(
             lambda x: self._detect_hate_keywords(str(x)) if pd.notna(x) else 0
         )
-        
+
         # Create simple features
         self.user_features = self._create_user_features()
-        self.subreddit_features = self._create_subreddit_features() 
+        self.subreddit_features = self._create_subreddit_features()
         self.comment_features = self._create_comment_features()
-        
+
         # Create simple graph
         self.graph = self._create_networkx_graph()
-        
+
         print(f"Loaded {len(self.comments_df)} comments")
         print(f"Graph: {self.graph.number_of_nodes()} nodes, {self.graph.number_of_edges()} edges")
-    
+
     def _detect_hate_keywords(self, text):
         """Simple hate detection based on keywords."""
         text = text.lower()
         hate_keywords = ['hate', 'fuck', 'stupid', 'idiot', 'kill', 'die', 'shit', 'damn']
         return int(any(word in text for word in hate_keywords))
-    
+
     def _create_user_features(self):
         """Create user features from CSV data."""
         user_features = {}
@@ -217,7 +224,7 @@ class Step4ResultsAnalyzer:
                 'unique_subreddits': group['subreddit'].nunique()
             }
         return user_features
-    
+
     def _create_subreddit_features(self):
         """Create subreddit features from CSV data."""
         subreddit_features = {}
@@ -229,7 +236,7 @@ class Step4ResultsAnalyzer:
                 'total_comments': total_count
             }
         return subreddit_features
-    
+
     def _create_comment_features(self):
         """Create comment features from CSV data."""
         comment_features = {}
@@ -240,19 +247,19 @@ class Step4ResultsAnalyzer:
                 'is_hate': row['cardiffnlp_label']
             }
         return comment_features
-    
+
     def _create_networkx_graph(self):
         """Create NetworkX graph from CSV data."""
         G = nx.Graph()
-        
+
         # Add nodes (comments)
         for i, (_, row) in enumerate(self.comments_df.iterrows()):
-            G.add_node(i, 
+            G.add_node(i,
                       comment_id=row['id'],
                       author=row['author'],
                       subreddit=row['subreddit'],
                       is_hate=row['cardiffnlp_label'])
-        
+
         # Create ID to index mapping for correct edge building
         id_to_idx = {row['id']: i for i, (_, row) in enumerate(self.comments_df.iterrows())}
 
@@ -262,15 +269,15 @@ class Step4ResultsAnalyzer:
             if parent_id and parent_id in id_to_idx:
                 parent_idx = id_to_idx[parent_id]
                 G.add_edge(parent_idx, i)
-        
+
         return G
-    
+
     def prepare_hate_comments_list(self):
         """Prepare a list of comments flagged as containing hate speech."""
         print("Preparing hate speech comments list...")
-        
+
         hate_comments = self.comments_df[self.comments_df['cardiffnlp_label'] == 1].copy()
-        
+
         hate_list = []
         for _, comment in hate_comments.iterrows():
             hate_list.append({
@@ -283,44 +290,44 @@ class Step4ResultsAnalyzer:
                 'parent_id': comment.get('parent_id', ''),
                 'link_id': comment.get('link_id', '')
             })
-        
+
         print(f"Found {len(hate_list)} hate speech comments")
         return hate_list
-    
+
     def extract_ngrams(self, texts, n=2, top_k=50):
         """Extract n-grams from hate speech comments."""
         print(f"Extracting {n}-grams from hate speech comments...")
-        
+
         all_ngrams = Counter()
-        
+
         for text in tqdm(texts, desc=f"Extracting {n}-grams"):
             if pd.isna(text) or not text:
                 continue
-                
+
             # Clean and tokenize text
             text_clean = re.sub(r'[^\w\s]', ' ', str(text).lower())
             words = text_clean.split()
-            
+
             # Extract n-grams
             for i in range(len(words) - n + 1):
                 ngram = ' '.join(words[i:i+n])
                 if len(ngram.strip()) > 0:
                     all_ngrams[ngram] += 1
-        
+
         # Get top k n-grams
         top_ngrams = all_ngrams.most_common(top_k)
-        
+
         print(f"Extracted {len(all_ngrams)} unique {n}-grams")
         print(f"Top {top_k} {n}-grams:")
         for i, (ngram, count) in enumerate(top_ngrams[:10], 1):
             print(f"{i:2d}. {ngram}: {count}")
-        
+
         return top_ngrams
-    
+
     def compare_with_davidson_lexicon(self, top_ngrams):
         """Compare top n-grams with Davidson lexicon."""
         print("Comparing n-grams with Davidson lexicon...")
-        
+
         # Define HATE_LEXICON directly (from data preparation script)
         HATE_LEXICON = [
             'allah akbar', 'all niggers', 'faggots like', 'faggots usually', 'fucking nigger',
@@ -384,27 +391,27 @@ class Step4ResultsAnalyzer:
             'maga loyalists', 'maga', 'loyalists', 'loyalist', 'woke', 'crazy',
             'insane', 'lunatic', 'psycho', 'psychotic', 'nasty', 'gnat'
         ]
-        
+
         davidson_terms = set(term.lower() for term in HATE_LEXICON)
-        
+
         comparison_results = {
             'total_ngrams': len(top_ngrams),
             'matched_ngrams': [],
             'unmatched_ngrams': [],
             'coverage': 0.0
         }
-        
+
         matched_count = 0
         for ngram, count in top_ngrams:
             ngram_lower = ngram.lower()
-            
+
             # Check if ngram matches any Davidson term
             is_matched = False
             for davidson_term in davidson_terms:
                 if davidson_term in ngram_lower or ngram_lower in davidson_term:
                     is_matched = True
                     break
-            
+
             if is_matched:
                 matched_count += 1
                 comparison_results['matched_ngrams'].append({
@@ -418,33 +425,33 @@ class Step4ResultsAnalyzer:
                     'count': count,
                     'matched': False
                 })
-        
+
         comparison_results['coverage'] = matched_count / len(top_ngrams) if top_ngrams else 0.0
-        
+
         print(f"Coverage: {comparison_results['coverage']:.2%} ({matched_count}/{len(top_ngrams)})")
         print(f"Matched n-grams: {len(comparison_results['matched_ngrams'])}")
         print(f"Unmatched n-grams: {len(comparison_results['unmatched_ngrams'])}")
-        
+
         return comparison_results
-    
+
     def node_level_prediction(self):
         """Node-level prediction: Predict whether a future comment will contain hate."""
         print("Performing node-level prediction analysis...")
-        
+
         # Group comments by thread (link_id) and sort by time
         thread_predictions = []
-        
+
         for link_id, thread_comments in self.comments_df.groupby('link_id'):
             thread_comments = thread_comments.sort_values('created_utc')
-            
+
             if len(thread_comments) < 2:
                 continue
-            
+
             # For each comment, predict based on previous comments in the thread
             for i in range(1, len(thread_comments)):
                 current_comment = thread_comments.iloc[i]
                 previous_comments = thread_comments.iloc[:i]
-                
+
                 # Features for prediction
                 current_time = current_comment.get('created_utc', 0)
                 first_time = thread_comments.iloc[0].get('created_utc', 0)
@@ -465,7 +472,7 @@ class Step4ResultsAnalyzer:
                     'author_hate_ratio': self.user_features.get(current_comment['author'], {}).get('hate_speech_ratio', 0),
                     'subreddit_hate_ratio': self.subreddit_features.get(current_comment['subreddit'], {}).get('hate_speech_ratio', 0)
                 }
-                
+
                 # Improved prediction: combine multiple features
                 prediction_score = (
                     features['thread_hate_ratio'] * 0.4 +
@@ -475,7 +482,7 @@ class Step4ResultsAnalyzer:
                 )
                 predicted_hate = 1 if prediction_score > 0.2 else 0  # Lower threshold
                 actual_hate = current_comment['cardiffnlp_label']
-                
+
                 thread_predictions.append({
                     'comment_id': current_comment['id'],
                     'link_id': link_id,
@@ -483,7 +490,7 @@ class Step4ResultsAnalyzer:
                     'actual': actual_hate,
                     'features': features
                 })
-        
+
         # Calculate metrics
         if thread_predictions:
             predictions_df = pd.DataFrame(thread_predictions)
@@ -504,7 +511,7 @@ class Step4ResultsAnalyzer:
                 'f1': f1_score(y_true, y_pred, zero_division=0),
                 'total_predictions': len(thread_predictions)
             }
-            
+
             print(f"Node-level prediction metrics:")
             print(f"  Accuracy: {metrics['accuracy']:.3f}")
             print(f"  Precision: {metrics['precision']:.3f}")
@@ -513,67 +520,67 @@ class Step4ResultsAnalyzer:
             print(f"  Total predictions: {metrics['total_predictions']}")
         else:
             metrics = {'error': 'No predictions made'}
-        
+
         return metrics
-    
+
     def predict_next_comment_with_tgnn(self):
         """Use TGNN model to predict whether the next comment will be hate."""
         print("Performing TGNN-based next comment prediction...")
-        
+
         if not self.tgnn_model:
             print("TGNN model not available, falling back to rule-based prediction")
             return self.node_level_prediction()
-        
+
         thread_predictions = []
-        
+
         # Load graph data for TGNN prediction
         try:
             # Try to load prepared graph data
             import torch
-            from torch_geometric.data import Data
             from sentence_transformers import SentenceTransformer
-            
+            from torch_geometric.data import Data
+
             # Create embeddings for comments
             model = SentenceTransformer('all-MiniLM-L6-v2')
             texts = self.comments_df['body'].fillna('').astype(str).tolist()
-            
+
             print(f"Creating embeddings for {len(texts)} comments...")
             embeddings = model.encode(texts[:1000], batch_size=64)  # Limit for speed
-            
+
             # Pad if needed
             if len(embeddings) < len(self.comments_df):
                 padding = np.zeros((len(self.comments_df) - len(embeddings), embeddings.shape[1]))
                 embeddings = np.vstack([embeddings, padding])
-            
+
             # Create graph structure
             edge_list = []
             id_to_idx = {row['id']: i for i, (_, row) in enumerate(self.comments_df.iterrows())}
-            
+
             for i, (_, row) in enumerate(self.comments_df.iterrows()):
                 parent_id = row.get('parent_id', '')
                 if parent_id and parent_id in id_to_idx:
                     parent_idx = id_to_idx[parent_id]
                     edge_list.append([parent_idx, i])
-            
+
             if not edge_list:
                 edge_list = [[0, 1]]  # Dummy edge
-            
+
             edge_index = torch.LongTensor(edge_list).t().contiguous()
             x = torch.FloatTensor(embeddings)
-            
+
             # Create labels
             y = torch.LongTensor(self.comments_df['cardiffnlp_label'].values)
-            
+
             # Create user mapping for TGNN compatibility
             users = self.comments_df['author'].unique()
             user_to_id = {user: i for i, user in enumerate(users)}
-            
+
             # Create additional features for TGNN compatibility
             additional_features = []
             for _, row in self.comments_df.iterrows():
                 # Add user features, time features, etc. with safe conversion
                 user_id = user_to_id.get(row['author'], 0)
-                
+
                 # Safe conversion for timestamp
                 try:
                     time_val = row.get('created_utc', 0)
@@ -583,7 +590,7 @@ class Step4ResultsAnalyzer:
                         time_feat = float(time_val) / 1e9
                 except (ValueError, TypeError):
                     time_feat = 0.0
-                
+
                 # Safe conversion for score
                 try:
                     score_val = row.get('score', 0)
@@ -593,7 +600,7 @@ class Step4ResultsAnalyzer:
                         score_feat = float(score_val) / 100.0
                 except (ValueError, TypeError):
                     score_feat = 0.0
-                
+
                 # Safe conversion for body length
                 try:
                     body_val = row.get('body', '')
@@ -603,7 +610,7 @@ class Step4ResultsAnalyzer:
                         body_len = len(str(body_val)) / 1000.0
                 except:
                     body_len = 0.0
-                
+
                 # Safe conversion for label
                 try:
                     label_val = row.get('cardiffnlp_label', 0)
@@ -613,7 +620,7 @@ class Step4ResultsAnalyzer:
                         label_feat = float(label_val)
                 except (ValueError, TypeError):
                     label_feat = 0.0
-                
+
                 # Create feature vector similar to 03_tgnn_model.py
                 feat_vector = [
                     user_id / max(len(users), 1),  # Normalized user ID
@@ -623,25 +630,25 @@ class Step4ResultsAnalyzer:
                     label_feat  # Hate label
                 ]
                 additional_features.append(feat_vector)
-            
+
             # Combine embeddings with additional features
             additional_features = np.array(additional_features)
             combined_features = np.concatenate([embeddings, additional_features], axis=1)
             x = torch.FloatTensor(combined_features)
-            
+
             # Create graph data with proper structure
             graph_data = Data(
-                x=x, 
-                edge_index=edge_index, 
+                x=x,
+                edge_index=edge_index,
                 y=y,
                 num_nodes=len(self.comments_df),
                 num_users=len(users)
             )
-            
+
             # Get device and move model
             device = next(self.tgnn_model.parameters()).device
             graph_data = graph_data.to(device)
-            
+
             # Get TGNN embeddings once for all predictions
             with torch.no_grad():
                 try:
@@ -657,56 +664,56 @@ class Step4ResultsAnalyzer:
                             node_embeddings = outputs[0]  # Take first output (usually embeddings)
                         else:
                             node_embeddings = outputs
-                    
+
                     print(f"TGNN generated embeddings shape: {node_embeddings.shape}")
-                    
+
                 except Exception as e:
                     print(f"TGNN forward pass failed: {e}")
                     # Fallback: use the input features as "embeddings"
                     node_embeddings = graph_data.x
                     print(f"Using input features as embeddings: {node_embeddings.shape}")
-            
+
             # Group by threads for sequential prediction
             for link_id, thread_comments in self.comments_df.groupby('link_id'):
                 thread_comments = thread_comments.sort_values('created_utc')
-                
+
                 if len(thread_comments) < 2:
                     continue
-                
+
                 # For each comment position, predict using previous context
                 for i in range(1, min(len(thread_comments), 10)):  # Limit for speed
                     current_comment = thread_comments.iloc[i]
                     previous_comments = thread_comments.iloc[:i]
-                    
+
                     # Get indices in the full dataset
                     current_idx = id_to_idx.get(current_comment['id'])
                     if current_idx is None or current_idx >= len(node_embeddings):
                         continue
-                    
+
                     # Get current comment embedding
                     current_embedding = node_embeddings[current_idx].cpu().numpy()
-                    
+
                     # Get context embeddings (previous comments in thread)
                     context_indices = []
                     for _, prev_comment in previous_comments.iterrows():
                         prev_idx = id_to_idx.get(prev_comment['id'])
                         if prev_idx is not None and prev_idx < len(node_embeddings):
                             context_indices.append(prev_idx)
-                    
+
                     if len(context_indices) > 0:
                         context_embeddings = node_embeddings[context_indices].cpu().numpy()
                         context_mean = np.mean(context_embeddings, axis=0)
-                        
+
                         # Calculate similarity-based prediction using TGNN embeddings
                         similarity = np.dot(current_embedding, context_mean) / (
                             np.linalg.norm(current_embedding) * np.linalg.norm(context_mean) + 1e-8
                         )
-                        
+
                         # Enhanced features
                         thread_hate_ratio = (previous_comments['cardiffnlp_label'] == 1).mean()
                         author_hate_ratio = self.user_features.get(current_comment['author'], {}).get('hate_speech_ratio', 0)
                         subreddit_hate_ratio = self.subreddit_features.get(current_comment['subreddit'], {}).get('hate_speech_ratio', 0)
-                        
+
                         # Combine TGNN embedding similarity with other features
                         prediction_score = (
                             max(0, similarity) * 0.4 +  # TGNN embedding similarity (ensure positive)
@@ -714,7 +721,7 @@ class Step4ResultsAnalyzer:
                             author_hate_ratio * 0.2 +  # Author history
                             subreddit_hate_ratio * 0.1  # Subreddit context
                         )
-                        
+
                         # Dynamic threshold based on context
                         threshold = 0.25  # Base threshold
                         if thread_hate_ratio > 0.5:
@@ -723,16 +730,16 @@ class Step4ResultsAnalyzer:
                             threshold = 0.22  # Lower threshold for high-hate subreddits
                         elif len(context_indices) < 2:
                             threshold = 0.3  # Higher threshold for limited context
-                        
+
                         predicted_hate = 1 if prediction_score > threshold else 0
                     else:
                         # No context available, use author-based prediction
                         author_hate_ratio = self.user_features.get(current_comment['author'], {}).get('hate_speech_ratio', 0)
                         predicted_hate = 1 if author_hate_ratio > 0.3 else 0
                         prediction_score = author_hate_ratio
-                    
+
                     actual_hate = current_comment['cardiffnlp_label']
-                    
+
                     thread_predictions.append({
                         'comment_id': current_comment['id'],
                         'link_id': link_id,
@@ -741,7 +748,7 @@ class Step4ResultsAnalyzer:
                         'tgnn_score': prediction_score,
                         'method': 'tgnn'
                     })
-            
+
             # Calculate metrics
             if thread_predictions:
                 predictions_df = pd.DataFrame(thread_predictions)
@@ -760,22 +767,22 @@ class Step4ResultsAnalyzer:
                     'total_predictions': len(thread_predictions),
                     'method': 'tgnn'
                 }
-                
+
                 print(f"TGNN-based prediction metrics:")
                 print(f"  Accuracy: {metrics['accuracy']:.3f}")
                 print(f"  Precision: {metrics['precision']:.3f}")
                 print(f"  Recall: {metrics['recall']:.3f}")
                 print(f"  F1: {metrics['f1']:.3f}")
-                
+
                 return metrics
             else:
                 return {'error': 'No TGNN predictions made'}
-                
+
         except Exception as e:
             print(f"TGNN prediction failed: {e}")
             print("Falling back to rule-based prediction")
             return self.node_level_prediction()
-    
+
     def _train_edge_prediction_model(self, X, y):
         """Train a machine learning model for edge prediction."""
         # Note: TGNN model available but not suitable for edge-level prediction
@@ -927,7 +934,7 @@ class Step4ResultsAnalyzer:
                     'num_replies': data['num_replies'],
                     'features': data['features']
                 })
-        
+
         # Calculate metrics
         if edge_predictions:
             predictions_df = pd.DataFrame(edge_predictions)
@@ -957,7 +964,7 @@ class Step4ResultsAnalyzer:
                 'total_predictions': len(edge_predictions),
                 'avg_reply_hate_ratio': predictions_df['reply_hate_ratio'].mean()
             }
-            
+
             print(f"Edge-level prediction metrics:")
             print(f"  Accuracy: {metrics['accuracy']:.3f}")
             print(f"  Precision: {metrics['precision']:.3f}")
@@ -967,19 +974,19 @@ class Step4ResultsAnalyzer:
             print(f"  Avg reply hate ratio: {metrics['avg_reply_hate_ratio']:.3f}")
         else:
             metrics = {'error': 'No edge predictions made'}
-        
+
         return metrics
-    
+
     def temporal_dynamics_analysis(self):
         """Analyze temporal dynamics of hate spread."""
         print("Analyzing temporal dynamics of hate spread...")
-        
+
         temporal_analysis = {
             'hate_response_times': [],
             'cascade_speeds': [],
             'thread_evolution': []
         }
-        
+
         # Analyze response times to hate comments
         for _, hate_comment in self.comments_df[self.comments_df['cardiffnlp_label'] == 1].iterrows():
             hate_time = hate_comment.get('created_utc', 0)
@@ -987,7 +994,7 @@ class Step4ResultsAnalyzer:
 
             if not hate_time or not link_id:
                 continue
-            
+
             # Find subsequent comments in the same thread
             try:
                 thread_comments = self.comments_df[
@@ -999,13 +1006,13 @@ class Step4ResultsAnalyzer:
                 thread_comments = self.comments_df[
                     self.comments_df['link_id'] == link_id
                 ].sort_values('created_utc', na_position='last')
-            
+
             if len(thread_comments) > 0:
                 # Time to first response
                 response_time = thread_comments.iloc[0].get('created_utc', 0)
                 first_response_time = self._safe_time_diff(response_time, hate_time)
                 temporal_analysis['hate_response_times'].append(first_response_time)
-                
+
                 # Check if first few responses are also hateful
                 first_responses = thread_comments.head(5)
                 hate_in_responses = (first_responses['cardiffnlp_label'] == 1).sum()
@@ -1014,7 +1021,7 @@ class Step4ResultsAnalyzer:
                     'hate_in_first_5': hate_in_responses,
                     'total_responses': len(first_responses)
                 })
-        
+
         # Calculate statistics
         if temporal_analysis['hate_response_times']:
             response_times = temporal_analysis['hate_response_times']
@@ -1024,24 +1031,24 @@ class Step4ResultsAnalyzer:
                 'min_response_time': np.min(response_times),
                 'max_response_time': np.max(response_times)
             }
-            
+
             print(f"Temporal dynamics analysis:")
             print(f"  Average response time: {temporal_analysis['stats']['avg_response_time']:.1f} seconds")
             print(f"  Median response time: {temporal_analysis['stats']['median_response_time']:.1f} seconds")
             print(f"  Response time range: {temporal_analysis['stats']['min_response_time']:.1f} - {temporal_analysis['stats']['max_response_time']:.1f} seconds")
-        
+
         return temporal_analysis
-    
+
     def influence_estimation(self):
         """Identify influential comments, users, and subreddits in hate propagation."""
         print("Analyzing influence in hate propagation...")
-        
+
         influence_analysis = {
             'influential_users': [],
             'influential_comments': [],
             'influential_subreddits': []
         }
-        
+
         # Analyze user influence
         user_influence = {}
         for user, features in self.user_features.items():
@@ -1055,21 +1062,21 @@ class Step4ResultsAnalyzer:
                     'total_comments': features['total_comments'],
                     'unique_subreddits': features['unique_subreddits']
                 }
-        
+
         # Top influential users
         top_users = sorted(user_influence.values(), key=lambda x: x['influence_score'], reverse=True)[:20]
         influence_analysis['influential_users'] = top_users
-        
+
         # Analyze comment influence (comments that trigger many hate replies)
         comment_influence = {}
         for _, comment in self.comments_df.iterrows():
             comment_id = comment['id']
             replies = self.comments_df[self.comments_df['parent_id'] == comment_id]
-            
+
             if len(replies) > 0:
                 hate_replies = replies[replies['cardiffnlp_label'] == 1]
                 influence_score = len(hate_replies) / len(replies) * np.log(len(replies) + 1)
-                
+
                 comment_influence[comment_id] = {
                     'comment_id': comment_id,
                     'influence_score': influence_score,
@@ -1078,11 +1085,11 @@ class Step4ResultsAnalyzer:
                     'hate_reply_ratio': len(hate_replies) / len(replies),
                     'text': str(comment.get('body', ''))[:100] + '...' if len(str(comment.get('body', ''))) > 100 else str(comment.get('body', ''))
                 }
-        
+
         # Top influential comments
         top_comments = sorted(comment_influence.values(), key=lambda x: x['influence_score'], reverse=True)[:20]
         influence_analysis['influential_comments'] = top_comments
-        
+
         # Analyze subreddit influence
         subreddit_influence = {}
         for subreddit, features in self.subreddit_features.items():
@@ -1094,44 +1101,44 @@ class Step4ResultsAnalyzer:
                     'hate_ratio': features['hate_speech_ratio'],
                     'total_comments': features['total_comments']
                 }
-        
+
         # Top influential subreddits
         top_subreddits = sorted(subreddit_influence.values(), key=lambda x: x['influence_score'], reverse=True)[:10]
         influence_analysis['influential_subreddits'] = top_subreddits
-        
+
         print(f"Influence analysis results:")
         print(f"  Top influential users: {len(top_users)}")
         print(f"  Top influential comments: {len(top_comments)}")
         print(f"  Top influential subreddits: {len(top_subreddits)}")
-        
+
         if top_users:
             print(f"  Most influential user: {top_users[0]['user']} (score: {top_users[0]['influence_score']:.3f})")
         if top_comments:
             print(f"  Most influential comment: {top_comments[0]['comment_id']} (score: {top_comments[0]['influence_score']:.3f})")
         if top_subreddits:
             print(f"  Most influential subreddit: {top_subreddits[0]['subreddit']} (score: {top_subreddits[0]['influence_score']:.3f})")
-        
+
         return influence_analysis
-    
+
     def propagation_patterns_analysis(self):
         """Analyze propagation patterns and cascade shapes."""
         print("Analyzing propagation patterns and cascade shapes...")
-        
+
         propagation_analysis = {
             'cascade_shapes': [],
             'branching_patterns': [],
             'hate_clustering': []
         }
-        
+
         # Analyze cascade shapes for each thread
         for link_id, thread_comments in self.comments_df.groupby('link_id'):
             if len(thread_comments) < 3:
                 continue
-            
+
             # Build comment tree structure
             comments_dict = {}
             root_comments = []
-            
+
             for _, comment in thread_comments.iterrows():
                 comments_dict[comment['id']] = {
                     'id': comment['id'],
@@ -1139,7 +1146,7 @@ class Step4ResultsAnalyzer:
                     'is_hate': comment['cardiffnlp_label'] == 1,
                     'children': []
                 }
-            
+
             # Build tree structure
             for comment_id, comment_data in comments_dict.items():
                 parent_id = comment_data['parent_id']
@@ -1147,25 +1154,25 @@ class Step4ResultsAnalyzer:
                     root_comments.append(comment_id)
                 elif parent_id in comments_dict:
                     comments_dict[parent_id]['children'].append(comment_id)
-            
+
             # Analyze cascade shape
             def analyze_branch(comment_id, depth=0):
                 if comment_id not in comments_dict:
                     return {'depth': depth, 'hate_count': 0, 'total_count': 0}
-                
+
                 comment_data = comments_dict[comment_id]
                 hate_count = 1 if comment_data['is_hate'] else 0
                 total_count = 1
                 max_depth = depth
-                
+
                 for child_id in comment_data['children']:
                     child_stats = analyze_branch(child_id, depth + 1)
                     hate_count += child_stats['hate_count']
                     total_count += child_stats['total_count']
                     max_depth = max(max_depth, child_stats['depth'])
-                
+
                 return {'depth': max_depth, 'hate_count': hate_count, 'total_count': total_count}
-            
+
             # Analyze each root branch
             for root_id in root_comments:
                 branch_stats = analyze_branch(root_id)
@@ -1177,7 +1184,7 @@ class Step4ResultsAnalyzer:
                     'hate_comments': branch_stats['hate_count'],
                     'hate_ratio': branch_stats['hate_count'] / branch_stats['total_count'] if branch_stats['total_count'] > 0 else 0
                 })
-        
+
         # Calculate statistics
         if propagation_analysis['cascade_shapes']:
             shapes_df = pd.DataFrame(propagation_analysis['cascade_shapes'])
@@ -1188,31 +1195,31 @@ class Step4ResultsAnalyzer:
                 'deep_threads': len(shapes_df[shapes_df['max_depth'] > 3]),
                 'wide_threads': len(shapes_df[shapes_df['total_comments'] > 10])
             }
-            
+
             print(f"Propagation patterns analysis:")
             print(f"  Average cascade depth: {propagation_analysis['stats']['avg_depth']:.2f}")
             print(f"  Maximum cascade depth: {propagation_analysis['stats']['max_depth']}")
             print(f"  Average hate ratio in cascades: {propagation_analysis['stats']['avg_hate_ratio']:.3f}")
             print(f"  Deep threads (>3 levels): {propagation_analysis['stats']['deep_threads']}")
             print(f"  Wide threads (>10 comments): {propagation_analysis['stats']['wide_threads']}")
-        
+
         return propagation_analysis
-    
+
     def network_vulnerability_analysis(self):
         """Analyze network vulnerability to hate spreading."""
         print("Analyzing network vulnerability to hate spreading...")
-        
+
         vulnerability_analysis = {
             'thread_vulnerability': [],
             'user_vulnerability': [],
             'structural_factors': {}
         }
-        
+
         # Analyze thread vulnerability
         for link_id, thread_comments in self.comments_df.groupby('link_id'):
             if len(thread_comments) < 2:
                 continue
-            
+
             # Calculate vulnerability factors
             factors = {
                 'link_id': link_id,
@@ -1226,7 +1233,7 @@ class Step4ResultsAnalyzer:
                 ),
                 'subreddit': thread_comments['subreddit'].iloc[0]
             }
-            
+
             # Vulnerability score (higher = more vulnerable)
             vulnerability_score = (
                 factors['hate_ratio'] * 0.4 +  # High hate ratio
@@ -1234,10 +1241,10 @@ class Step4ResultsAnalyzer:
                 (factors['time_span'] / 3600) * 0.2 +  # Long duration
                 (1 - factors['unique_authors'] / factors['thread_size']) * 0.1  # Few unique authors
             )
-            
+
             factors['vulnerability_score'] = vulnerability_score
             vulnerability_analysis['thread_vulnerability'].append(factors)
-        
+
         # Analyze user vulnerability (users who are more likely to engage in hate)
         user_vulnerability = {}
         for user, features in self.user_features.items():
@@ -1247,7 +1254,7 @@ class Step4ResultsAnalyzer:
                     features['hate_speech_ratio'] * 0.6 +
                     (1 - features['unique_subreddits'] / 10) * 0.4  # Low diversity
                 )
-                
+
                 user_vulnerability[user] = {
                     'user': user,
                     'vulnerability_score': vulnerability_score,
@@ -1255,11 +1262,11 @@ class Step4ResultsAnalyzer:
                     'unique_subreddits': features['unique_subreddits'],
                     'total_comments': features['total_comments']
                 }
-        
+
         # Top vulnerable users
         top_vulnerable_users = sorted(user_vulnerability.values(), key=lambda x: x['vulnerability_score'], reverse=True)[:20]
         vulnerability_analysis['user_vulnerability'] = top_vulnerable_users
-        
+
         # Calculate structural factors
         if vulnerability_analysis['thread_vulnerability']:
             threads_df = pd.DataFrame(vulnerability_analysis['thread_vulnerability'])
@@ -1268,18 +1275,18 @@ class Step4ResultsAnalyzer:
                 'high_vulnerability_threads': len(threads_df[threads_df['vulnerability_score'] > 0.5]),
                 'vulnerable_subreddits': threads_df.groupby('subreddit')['vulnerability_score'].mean().to_dict()
             }
-            
+
             print(f"Network vulnerability analysis:")
             print(f"  Average thread vulnerability: {vulnerability_analysis['structural_factors']['avg_vulnerability']:.3f}")
             print(f"  High vulnerability threads: {vulnerability_analysis['structural_factors']['high_vulnerability_threads']}")
             print(f"  Most vulnerable users: {len(top_vulnerable_users)}")
-        
+
         return vulnerability_analysis
-    
+
     def save_results(self, results):
         """Save all Step 4 results."""
         print("Saving Step 4 results...")
-        
+
         # Save comprehensive results
         results_path = self.artifacts_dir / 'step4_comprehensive_results.json'
         with open(results_path, 'w', encoding='utf-8') as f:
@@ -1305,19 +1312,19 @@ def ce_score_batch(model, tokenizer, pairs: List[List[str]]) -> List[float]:
     """Score pairs using cross-encoder model."""
     if model is None or tokenizer is None:
         return [0.0] * len(pairs)
-    
+
     qs = [p[0] for p in pairs]
     ds = [p[1] for p in pairs]
-    
+
     try:
         enc = tokenizer(qs, ds, padding=True, truncation=True, max_length=256, return_tensors="pt")
         if torch.cuda.is_available():
             for k in enc:
                 enc[k] = enc[k].to(torch.device("cuda"))
-        
+
         with torch.no_grad():
             out = model(**enc).logits.squeeze(-1).detach().cpu().tolist()
-        
+
         if isinstance(out, float):
             out = [out]
         return [float(x) for x in out]
@@ -1329,16 +1336,16 @@ def rerank_topn(query: str, cands: List[Dict], topn: int, alpha: float, model, t
     """Rerank top-N candidates using cross-encoder."""
     if topn <= 0 or model is None or tokenizer is None or len(cands) == 0:
         return cands
-    
+
     # Sort candidates by original score
     cands_sorted = sorted(cands, key=lambda x: x.get("score", 0.0), reverse=True)
     head = cands_sorted[:topn]
     tail = cands_sorted[topn:]
-    
+
     # Prepare pairs for cross-encoder
     pairs = [[query, x.get("text", "")] for x in head]
     ce_scores = ce_score_batch(model, tokenizer, pairs)
-    
+
     # Fuse scores
     fused = []
     for x, ce in zip(head, ce_scores):
@@ -1347,43 +1354,43 @@ def rerank_topn(query: str, cands: List[Dict], topn: int, alpha: float, model, t
         x2["fused_score"] = alpha * ce + (1.0 - alpha) * base
         x2["ce_score"] = ce
         fused.append(x2)
-    
+
     # Sort by fused score
     fused_sorted = sorted(fused, key=lambda x: x.get("fused_score", x.get("score", 0.0)), reverse=True)
-    
+
     # Merge with tail and sort all by fused score (tail keeps original score)
     for item in tail:
         item["fused_score"] = item.get("score", 0.0)
         item["ce_score"] = 0.0
-    
+
     merged = fused_sorted + tail
     merged = sorted(merged, key=lambda x: x.get("fused_score", x.get("score", 0.0)), reverse=True)
-    
+
     return merged
 
 class DiffusionPredictor:
     """Hate speech diffusion predictor using TGNN embeddings."""
-    
+
     def __init__(self, config):
         self.config = config
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.diffusion_config = config.get('diffusion', {})
         self.k_values = self.diffusion_config.get('k_values', [1, 5, 10, 20])
         self.prediction_window = self.diffusion_config.get('prediction_window', 24)  # hours
-        
+
         # Thread pairing analysis
         self.use_thread_pairing = False
         self.pairing_info = []
-        
+
     def load_data(self):
         """Load data from CSV files and build graph."""
         print("Loading data from CSV files for diffusion prediction...")
-        
+
         # Load CSV files
         train_df = load_csv_robust('../supervision_train80_threads.csv')
         val_df = load_csv_robust('../supervision_validation10_threads.csv')
         test_df = load_csv_robust('../supervision_test10_threads.csv')
-        
+
         print(f"Loaded train: {len(train_df)}, val: {len(val_df)}, test: {len(test_df)} comments")
 
         # Combine all data for diffusion analysis (no training here)
@@ -1405,53 +1412,53 @@ class DiffusionPredictor:
             print(f"Selected {len(selected_threads)} threads with {len(all_df)} comments")
         else:
             all_df = combined_df
-        
+
         # Skip complex graph building - 04 is independent analysis
         print(f"Loaded {len(all_df)} comments for diffusion analysis")
         self.all_df = all_df
-        
+
         # Skip complex graph building and use simple embeddings
         self.model = None
         self.graph_data = self._build_simple_graph_data(all_df)
         print("Using direct embeddings for diffusion prediction")
-        
+
         # Create NetworkX graph for analysis
         self.nx_graph = self._create_nx_graph_from_csv(all_df)
         print(f"Created NetworkX graph: {self.nx_graph.number_of_nodes()} nodes")
-        
+
         # No thread pairing for now
         self.use_thread_pairing = False
         self.pairing_info = []
         print("Using standard diffusion analysis")
-    
+
     def _build_simple_graph_data(self, df):
         """Build simple graph data from CSV."""
-        from torch_geometric.data import Data
         from sentence_transformers import SentenceTransformer
-        
+        from torch_geometric.data import Data
+
         print("Building simple graph data...")
-        
+
         # Create embeddings
         model = SentenceTransformer('all-MiniLM-L6-v2')
         texts = df['body'].fillna('').astype(str).tolist()
         embeddings = model.encode(texts[:1000])  # Limit for speed
-        
+
         # Pad embeddings if needed
         if len(embeddings) < len(df):
             padding = np.zeros((len(df) - len(embeddings), embeddings.shape[1]))
             embeddings = np.vstack([embeddings, padding])
-        
+
         # Create features
         x = torch.FloatTensor(embeddings)
-        
+
         # Create user mapping
         users = df['author'].unique()
         user_to_id = {user: i for i, user in enumerate(users)}
-        
+
         # Simple edges (sequential connections)
         edges = [[i, i+1] for i in range(len(df)-1)]
         edge_index = torch.LongTensor(edges).t().contiguous() if edges else torch.LongTensor([[0], [0]])
-        
+
         return Data(
             x=x,
             edge_index=edge_index,
@@ -1459,15 +1466,15 @@ class DiffusionPredictor:
             num_users=len(users),
             user_to_id=user_to_id
         )
-    
+
     def _create_nx_graph_from_csv(self, df):
         """Create NetworkX graph from CSV."""
         G = nx.Graph()
-        
+
         # Add nodes
         for i in range(len(df)):
             G.add_node(i)
-        
+
         # Create ID to index mapping for correct edge building
         id_to_idx = {row['id']: i for i, (_, row) in enumerate(df.iterrows())}
 
@@ -1477,28 +1484,28 @@ class DiffusionPredictor:
             if parent_id and parent_id in id_to_idx:
                 parent_idx = id_to_idx[parent_id]
                 G.add_edge(parent_idx, i)
-        
+
         return G
-    
+
     def get_node_embeddings(self):
         """Extract node embeddings from graph data."""
         print("Extracting node embeddings...")
-        
+
         # Use the node features directly as embeddings
         embeddings = self.graph_data.x.cpu().numpy()
-        
+
         return embeddings
-    
+
     def create_diffusion_scenarios(self):
         """Create hate speech diffusion scenarios for prediction."""
         print("Creating diffusion scenarios...")
-        
+
         scenarios = []
-        
+
         # Get user nodes with hate speech activity
         user_to_id = self.graph_data.user_to_id
         num_users = self.graph_data.num_users
-        
+
         # Find users who have posted any content (more scenarios)
         active_users = []
         for user, user_id in user_to_id.items():
@@ -1508,40 +1515,40 @@ class DiffusionPredictor:
                 if total_posts > 0:  # Any user with posts
                     hate_ratio = self.graph_data.x[user_id, -7].item()  # hate_ratio feature
                     active_users.append((user, user_id, hate_ratio))
-        
+
         # Sort by hate ratio and take top users
         active_users.sort(key=lambda x: x[2], reverse=True)
         print(f"Found {len(active_users)} active users")
-        
+
         # Create scenarios: predict diffusion from active users
         for user, user_id, hate_ratio in active_users[:25]:  # Take top 25 for more scenarios
             # Get user's neighbors and expand to larger candidate set
             candidates = set()
-            
+
             if self.nx_graph.has_node(user_id):
                 # Direct neighbors (1-hop)
                 direct_neighbors = list(self.nx_graph.neighbors(user_id))
                 candidates.update(direct_neighbors)
-                
+
                 # 2-hop neighbors for larger candidate sets
                 for neighbor in direct_neighbors:
                     if self.nx_graph.has_node(neighbor):
                         second_hop = list(self.nx_graph.neighbors(neighbor))
                         candidates.update(second_hop)
-                
+
                 # Add some random users for diversity (3-hop equivalent)
                 all_users = list(range(min(1000, self.graph_data.num_users)))
                 random_users = np.random.choice(all_users, size=min(20, len(all_users)), replace=False)
                 candidates.update(random_users)
-                
+
                 # Remove the source user itself
                 candidates.discard(user_id)
-                
+
                 # Convert to list, shuffle, and ensure minimum size
                 candidates = list(candidates)
                 np.random.shuffle(candidates)
                 candidates = candidates[:30]  # Max 30 candidates for better evaluation
-                
+
                 if len(candidates) >= 10:  # At least 10 candidates for meaningful Hit@10 evaluation
                     scenarios.append({
                         'source_user': user,
@@ -1550,72 +1557,72 @@ class DiffusionPredictor:
                         'hate_ratio': hate_ratio,
                         'scenario_type': 'content_diffusion'
                     })
-        
+
         print(f"Created {len(scenarios)} diffusion scenarios")
         return scenarios
-    
+
     def predict_diffusion_probability(self, source_id, target_ids, embeddings):
         """Predict diffusion probability with realistic ranking distribution."""
         source_emb = embeddings[source_id]
-        
+
         probabilities = []
         for target_id in target_ids:
             if target_id < len(embeddings):
                 target_emb = embeddings[target_id]
-                
+
                 # 1. Cosine similarity
                 cosine_sim = np.dot(source_emb, target_emb) / (
                     np.linalg.norm(source_emb) * np.linalg.norm(target_emb) + 1e-8
                 )
-                
+
                 # 2. Euclidean distance similarity
                 euclidean_dist = np.linalg.norm(source_emb - target_emb)
                 euclidean_sim = 1 / (1 + euclidean_dist)
-                
+
                 # 3. Network proximity
                 network_proximity = self.get_network_proximity(source_id, target_id)
-                
+
                 # Weighted combination
                 combined_similarity = (
-                    0.5 * cosine_sim + 
-                    0.3 * euclidean_sim + 
+                    0.5 * cosine_sim +
+                    0.3 * euclidean_sim +
                     0.2 * network_proximity
                 )
-                
+
                 # Improved probability calculation for better Hit@1
                 # Use multiple factors for more nuanced ranking
-                
+
                 # 1. Sigmoid transformation with better parameters
                 sigmoid_input = 8 * (combined_similarity - 0.4)  # Sharper distinction
                 base_prob = 1 / (1 + np.exp(-sigmoid_input))
-                
+
                 # 2. Add user-specific factors for better discrimination
                 if hasattr(self.graph_data, 'x') and target_id < len(self.graph_data.x):
                     target_features = self.graph_data.x[target_id]
                     target_hate_ratio = target_features[-7].item() if len(target_features) > 7 else 0.0
-                    
+
                     # Users with higher hate ratio more likely to diffuse
                     hate_boost = 1 + target_hate_ratio * 0.3
                     base_prob *= hate_boost
-                
+
                 # 3. Network structure bonus
                 network_bonus = network_proximity * 0.2
                 base_prob += network_bonus
-                
+
                 # 4. Scale with better range and less noise for top candidates
                 scaled_prob = 0.1 + 0.6 * base_prob
-                
+
                 # 5. Adaptive noise based on similarity (less noise for high similarity)
                 noise_level = 0.08 * (1 - combined_similarity)  # Less noise for better candidates
                 noise = np.random.normal(0, noise_level)
                 final_prob = np.clip(scaled_prob + noise, 0.05, 0.8)
-                
+
                 probabilities.append(final_prob)
             else:
                 probabilities.append(0.0)
-        
+
         return np.array(probabilities)
-    
+
     def get_user_text_representation(self, user_id):
         """Get text representation of user for cross-encoder."""
         try:
@@ -1632,12 +1639,12 @@ class DiffusionPredictor:
                             return f"User {user_name} (posts: {total_posts:.0f}, hate ratio: {hate_ratio:.2f})"
                         else:
                             return f"User {user_name}"
-            
+
             # Fallback: just use user ID
             return f"User {user_id}"
         except:
             return f"User {user_id}"
-    
+
     def get_network_proximity(self, source_id, target_id):
         """Calculate network proximity between two nodes."""
         try:
@@ -1655,127 +1662,127 @@ class DiffusionPredictor:
                 return np.random.uniform(0.1, 0.5)
         except:
             return 0.2  # Default proximity
-    
+
     def simulate_ground_truth_diffusion(self, scenarios):
         """Simulate ground truth diffusion with partial correlation to predictions."""
         print("Simulating ground truth diffusion...")
-        
+
         ground_truth = {}
         # Different seed to create realistic but not perfect correlation
-        np.random.seed(456)  
-        
+        np.random.seed(456)
+
         for i, scenario in enumerate(scenarios):
             source_id = scenario['source_id']
             neighbors = scenario['neighbors']
             hate_ratio = scenario.get('hate_ratio', 0.5)
-            
+
             # Get source embedding for similarity-based ground truth
             source_emb = self.node_embeddings[source_id] if hasattr(self, 'node_embeddings') else None
-            
+
             true_diffusion = []
             for j, neighbor_id in enumerate(neighbors):
                 if neighbor_id < self.graph_data.num_nodes:
                     # Calculate similarity factors (similar to prediction but different weights)
                     if source_emb is not None and neighbor_id < len(self.node_embeddings):
                         neighbor_emb = self.node_embeddings[neighbor_id]
-                        
+
                         # Different similarity calculation than prediction
                         cosine_sim = np.dot(source_emb, neighbor_emb) / (
                             np.linalg.norm(source_emb) * np.linalg.norm(neighbor_emb) + 1e-8
                         )
                         network_prox = self.get_network_proximity(source_id, neighbor_id)
-                        
+
                         # Different weighting than prediction (emphasize network over content)
                         similarity_score = 0.3 * cosine_sim + 0.7 * network_prox
                     else:
                         similarity_score = np.random.uniform(0, 1)
-                    
+
                     # User-specific factors
                     user_resistance = np.random.beta(2, 3)  # Moderate resistance
                     user_susceptibility = np.random.beta(2, 2)  # Balanced susceptibility
-                    
+
                     # Content virality (independent factor)
                     virality = np.random.uniform(0.2, 0.8)
-                    
+
                     # Calculate diffusion probability with higher base rates
                     # Ground truth with partial correlation to predictions but different emphasis
                     # Emphasize user characteristics more than similarity
-                    
+
                     # Get user hate ratio for ground truth
                     target_hate_ratio = 0.0
                     if hasattr(self.graph_data, 'x') and neighbor_id < len(self.graph_data.x):
                         target_features = self.graph_data.x[neighbor_id]
                         target_hate_ratio = target_features[-7].item() if len(target_features) > 7 else 0.0
-                    
+
                     # Much more independent ground truth generation
                     # Reduce correlation with prediction to avoid overfitting
-                    
+
                     # Use completely different factors for ground truth
                     random_factor = np.random.uniform(0.1, 0.6)  # Random baseline
                     user_factor = target_hate_ratio * 0.3 if target_hate_ratio > 0 else 0.1
                     time_factor = np.random.uniform(0.8, 1.2)  # Time-dependent randomness
                     social_factor = np.random.choice([0.5, 1.0, 1.5], p=[0.6, 0.3, 0.1])  # Social influence
-                    
+
                     # Simple resistance and susceptibility for ground truth
                     resistance_effect = 1 - user_resistance * 0.2
                     susceptibility_boost = 1 + user_susceptibility * 0.2
-                    
+
                     # Combine with much less emphasis on similarity
                     base_prob = random_factor + user_factor * 0.3 + (similarity_score * 0.1)
                     final_prob = base_prob * resistance_effect * susceptibility_boost * virality * time_factor * social_factor
                     final_prob = np.clip(final_prob, 0.05, 0.7)  # More realistic range
-                    
+
                     # Binary decision
                     will_diffuse = np.random.random() < final_prob
                     true_diffusion.append(int(will_diffuse))
                 else:
                     true_diffusion.append(0)
-            
+
             ground_truth[i] = np.array(true_diffusion)
-        
+
         return ground_truth
-    
+
     def evaluate_hit_at_k(self, predictions, ground_truth, k_values):
         """Evaluate Hit@k metrics."""
         print("Evaluating Hit@k metrics...")
-        
+
         hit_at_k = {k: [] for k in k_values}
         total_true_positives = 0
         total_scenarios = 0
-        
+
         for scenario_id in predictions:
             pred_probs = predictions[scenario_id]
             true_labels = ground_truth[scenario_id]
-            
+
             if len(pred_probs) == 0 or len(true_labels) == 0:
                 continue
-            
+
             total_scenarios += 1
             num_positives = np.sum(true_labels)
             total_true_positives += num_positives
-            
+
             # Debug: Print first few scenarios
             if scenario_id < 3:
                 print(f"Scenario {scenario_id}: {num_positives} positives out of {len(true_labels)} candidates")
                 print(f"  Pred probs range: {np.min(pred_probs):.3f} - {np.max(pred_probs):.3f}")
                 print(f"  True labels sum: {np.sum(true_labels)}")
-            
+
             # Skip scenarios with no positive examples
             if num_positives == 0:
                 continue
-            
+
             # Get top-k predictions
             top_indices = np.argsort(pred_probs)[::-1]
-            
+
             for k in k_values:
                 if k <= len(top_indices):
                     top_k_indices = top_indices[:k]
                     # Check if any of top-k predictions are correct
                     hit = np.any(true_labels[top_k_indices])
                     hit_at_k[k].append(hit)
-        
+
         print(f"Total scenarios: {total_scenarios}, Total positives: {total_true_positives}")
-        
+
         # Compute average Hit@k
         hit_at_k_avg = {}
         for k in k_values:
@@ -1783,25 +1790,25 @@ class DiffusionPredictor:
                 hit_at_k_avg[k] = np.mean(hit_at_k[k])
             else:
                 hit_at_k_avg[k] = 0.0
-        
+
         return hit_at_k_avg
-    
+
     def evaluate_mrr(self, predictions, ground_truth):
         """Evaluate Mean Reciprocal Rank (MRR)."""
         print("Evaluating MRR...")
-        
+
         reciprocal_ranks = []
-        
+
         for scenario_id in predictions:
             pred_probs = predictions[scenario_id]
             true_labels = ground_truth[scenario_id]
-            
+
             if len(pred_probs) == 0 or len(true_labels) == 0 or not np.any(true_labels):
                 continue
-            
+
             # Sort by prediction probability
             sorted_indices = np.argsort(pred_probs)[::-1]
-            
+
             # Find rank of first correct prediction
             for rank, idx in enumerate(sorted_indices):
                 if true_labels[idx]:
@@ -1809,45 +1816,45 @@ class DiffusionPredictor:
                     break
             else:
                 reciprocal_ranks.append(0.0)  # No correct prediction found
-        
+
         mrr = np.mean(reciprocal_ranks) if reciprocal_ranks else 0.0
         return mrr
-    
+
     def evaluate_jaccard(self, predictions, ground_truth, threshold=0.5):
         """Evaluate Jaccard similarity."""
         print("Evaluating Jaccard similarity...")
-        
+
         jaccard_scores = []
-        
+
         for scenario_id in predictions:
             pred_probs = predictions[scenario_id]
             true_labels = ground_truth[scenario_id]
-            
+
             if len(pred_probs) == 0 or len(true_labels) == 0:
                 continue
-            
+
             # Convert predictions to binary
             pred_binary = (pred_probs > threshold).astype(int)
             true_binary = true_labels.astype(int)
-            
+
             # Compute Jaccard similarity
             jaccard = jaccard_score(true_binary, pred_binary, average='binary', zero_division=0)
             jaccard_scores.append(jaccard)
-        
+
         avg_jaccard = np.mean(jaccard_scores) if jaccard_scores else 0.0
         return avg_jaccard
-    
+
     def analyze_diffusion_patterns(self, scenarios, predictions):
         """Analyze diffusion patterns and characteristics with improved classification."""
         print("Analyzing diffusion patterns...")
-        
+
         patterns = {
             'high_diffusion_users': [],
             'low_diffusion_users': [],
             'diffusion_by_network_position': {},
             'temporal_patterns': {}
         }
-        
+
         # Calculate average diffusion probabilities for each user
         user_probs = []
         for i, scenario in enumerate(scenarios):
@@ -1861,12 +1868,12 @@ class DiffusionPredictor:
                     'avg_diffusion_prob': avg_diffusion_prob,  # Keep as float for calculation
                     'num_neighbors': len(scenario['neighbors'])
                 })
-        
+
         # Use median to classify users more reasonably
         if user_probs:
             prob_values = [u['avg_diffusion_prob'] for u in user_probs]
             median_prob = np.median(prob_values)
-            
+
             for user_info in user_probs:
                 # Classify based on relative position to median
                 if user_info['avg_diffusion_prob'] > median_prob:
@@ -1883,7 +1890,7 @@ class DiffusionPredictor:
                         'avg_diffusion_prob': f"{user_info['avg_diffusion_prob']:.6f}",
                         'num_neighbors': user_info['num_neighbors']
                     })
-                
+
                 # Network position analysis
                 if hasattr(self, 'nx_graph') and self.nx_graph.has_node(user_info['user_id']):
                     degree = self.nx_graph.degree(user_info['user_id'])
@@ -1892,49 +1899,49 @@ class DiffusionPredictor:
                     patterns['diffusion_by_network_position'][str(degree)].append(
                         f"{user_info['avg_diffusion_prob']:.6f}"
                     )
-        
+
         return patterns
-    
+
     def run_diffusion_prediction(self):
         """Run complete diffusion prediction pipeline."""
         print("Running diffusion prediction pipeline...")
-        
+
         # Get node embeddings
         embeddings = self.get_node_embeddings()
-        
+
         # Create diffusion scenarios
         scenarios = self.create_diffusion_scenarios()
-        
+
         if not scenarios:
             print("No diffusion scenarios found!")
             return {}
-        
+
         # Predict diffusion probabilities with optional cross-encoder reranking
         predictions = {}
         raw_predictions = {}  # Store original predictions for comparison
-        
+
         for i, scenario in enumerate(tqdm(scenarios, desc="Predicting diffusion")):
             source_id = scenario['source_id']
             neighbor_ids = scenario['neighbors']
-            
+
             # Get original prediction scores
             pred_probs = self.predict_diffusion_probability(source_id, neighbor_ids, embeddings)
             raw_predictions[i] = pred_probs
-            
+
             # Use improved original algorithm (cross-encoder removed for better performance)
             predictions[i] = pred_probs
-        
+
         # Simulate ground truth
         ground_truth = self.simulate_ground_truth_diffusion(scenarios)
-        
+
         # Evaluate metrics
         hit_at_k = self.evaluate_hit_at_k(predictions, ground_truth, self.k_values)
         mrr = self.evaluate_mrr(predictions, ground_truth)
         jaccard = self.evaluate_jaccard(predictions, ground_truth)
-        
+
         # Analyze patterns
         patterns = self.analyze_diffusion_patterns(scenarios, predictions)
-        
+
         results = {
             'hit_at_k': hit_at_k,
             'mrr': mrr,
@@ -1942,20 +1949,20 @@ class DiffusionPredictor:
             'num_scenarios': len(scenarios),
             'patterns': patterns
         }
-        
+
         return results
 
 def save_diffusion_results(results, config):
     """Save diffusion prediction results."""
     print("Saving diffusion prediction results...")
-    
+
     artifacts_dir = Path(config['paths']['artifacts_dir'])
     artifacts_dir.mkdir(exist_ok=True)
-    
+
     # Save main results
     with open(artifacts_dir / 'diffusion_prediction_results.json', 'w') as f:
         json.dump(results, f, indent=2, default=str)
-    
+
     # Save summary
     summary = {
         'hit_at_1': results.get('hit_at_k', {}).get(1, 0),
@@ -1965,10 +1972,10 @@ def save_diffusion_results(results, config):
         'jaccard': results.get('jaccard', 0),
         'num_scenarios': results.get('num_scenarios', 0)
     }
-    
+
     with open(artifacts_dir / 'diffusion_summary.json', 'w') as f:
         json.dump(summary, f, indent=2)
-    
+
     print(f"Diffusion prediction results saved to {artifacts_dir}")
 
 def analyze_thread_pairing_diffusion(predictor):
@@ -1976,11 +1983,11 @@ def analyze_thread_pairing_diffusion(predictor):
     分析线程配对中的扩散模式
     """
     print("\n=== Thread Pairing Diffusion Analysis ===")
-    
+
     if not predictor.use_thread_pairing or not predictor.pairing_info:
         print("No thread pairing data available for analysis")
         return {}
-    
+
     thread_analysis = {
         'pair_comparisons': [],
         'diffusion_patterns': {
@@ -1989,19 +1996,19 @@ def analyze_thread_pairing_diffusion(predictor):
         },
         'similarity_analysis': []
     }
-    
+
     for pair_info in predictor.pairing_info:
         pair_id = pair_info['pair_id']
         hate_link_id = pair_info['hate_link_id']
         non_hate_link_id = pair_info['non_hate_link_id']
         similarity_score = pair_info['similarity_score']
-        
+
         # 分析仇恨线程的扩散模式
         hate_metrics = analyze_single_thread_diffusion(predictor, hate_link_id, 'hate')
-        
+
         # 分析非仇恨线程的扩散模式
         non_hate_metrics = analyze_single_thread_diffusion(predictor, non_hate_link_id, 'non_hate')
-        
+
         # 比较分析
         comparison = {
             'pair_id': pair_id,
@@ -2014,31 +2021,31 @@ def analyze_thread_pairing_diffusion(predictor):
                 'depth_diff': hate_metrics['depth'] - non_hate_metrics['depth']
             }
         }
-        
+
         thread_analysis['pair_comparisons'].append(comparison)
-    
+
     # 计算平均指标
     if thread_analysis['pair_comparisons']:
         hate_engagements = [c['hate_thread_metrics']['engagement'] for c in thread_analysis['pair_comparisons']]
         non_hate_engagements = [c['non_hate_thread_metrics']['engagement'] for c in thread_analysis['pair_comparisons']]
-        
+
         thread_analysis['diffusion_patterns']['hate_threads']['avg_engagement'] = np.mean(hate_engagements)
         thread_analysis['diffusion_patterns']['non_hate_threads']['avg_engagement'] = np.mean(non_hate_engagements)
-        
+
         # 相似度分析
         similarities = [c['similarity_score'] for c in thread_analysis['pair_comparisons']]
         engagement_diffs = [c['diffusion_difference']['engagement_diff'] for c in thread_analysis['pair_comparisons']]
-        
+
         thread_analysis['similarity_analysis'] = {
             'avg_similarity': np.mean(similarities),
             'avg_engagement_diff': np.mean(engagement_diffs),
             'correlation': np.corrcoef(similarities, engagement_diffs)[0, 1] if len(similarities) > 1 else 0
         }
-    
+
     print(f"Analyzed {len(thread_analysis['pair_comparisons'])} thread pairs")
     print(f"Average hate thread engagement: {thread_analysis['diffusion_patterns']['hate_threads']['avg_engagement']:.3f}")
     print(f"Average non-hate thread engagement: {thread_analysis['diffusion_patterns']['non_hate_threads']['avg_engagement']:.3f}")
-    
+
     return thread_analysis
 
 def analyze_single_thread_diffusion(predictor, link_id, thread_type):
@@ -2052,15 +2059,15 @@ def analyze_single_thread_diffusion(predictor, link_id, thread_type):
             # 这里需要根据实际的图结构来匹配link_id
             # 简化版本：使用节点度作为扩散指标
             thread_nodes.append(node_id)
-    
+
     if not thread_nodes:
         return {'engagement': 0, 'spread': 0, 'depth': 0}
-    
+
     # 计算扩散指标
     engagement = len(thread_nodes)  # 参与节点数
     spread = max([predictor.nx_graph.degree(node) for node in thread_nodes]) if thread_nodes else 0  # 最大度
     depth = len(set([predictor.nx_graph.nodes[node].get('name', '') for node in thread_nodes]))  # 唯一用户数
-    
+
     return {
         'engagement': engagement,
         'spread': spread,
@@ -2070,10 +2077,10 @@ def analyze_single_thread_diffusion(predictor, link_id, thread_type):
 
 def main():
     parser = argparse.ArgumentParser(description="Results Analysis and Diffusion Prediction for Reddit Hate Speech")
-    parser.add_argument("--mode", type=str, default='both', choices=['analysis', 'diffusion', 'both'], 
+    parser.add_argument("--mode", type=str, default='both', choices=['analysis', 'diffusion', 'both'],
                        help="Run analysis, diffusion prediction, or both")
     args = parser.parse_args()
-    
+
     # Create simple config
     config = {
         'paths': {
@@ -2084,50 +2091,50 @@ def main():
             'prediction_window': 24
         }
     }
-    
+
     print("=== Results Analysis and Diffusion Prediction ===")
-    
+
     if args.mode in ['analysis', 'both']:
         print("\n=== Step 4 - Results Analysis ===")
-        
+
         # Initialize Step 4 analyzer
         analyzer = Step4ResultsAnalyzer(config)
-        
+
         # Load data
         analyzer.load_data()
-        
+
         # Prepare hate comments list
         hate_comments = analyzer.prepare_hate_comments_list()
-        
+
         # Extract n-grams and compare with Davidson lexicon
         print("\n=== N-grams Analysis ===")
         hate_texts = [comment['text'] for comment in hate_comments]
         top_ngrams = analyzer.extract_ngrams(hate_texts, n=2, top_k=50)
         ngram_comparison = analyzer.compare_with_davidson_lexicon(top_ngrams)
-        
+
         # Predictive Goals
         print("\n=== Predictive Goals ===")
-        
+
         # Try TGNN-based prediction first, fall back to rule-based if needed
         print("\n--- TGNN-based Next Comment Prediction ---")
         tgnn_metrics = analyzer.predict_next_comment_with_tgnn()
-        
+
         print("\n--- Rule-based Node-level Prediction ---")
         node_metrics = analyzer.node_level_prediction()
-        
+
         print("\n--- Edge-level Prediction ---")
         edge_metrics = analyzer.edge_level_prediction()
-        
+
         # Temporal dynamics
         print("\n=== Temporal Dynamics ===")
         temporal_analysis = analyzer.temporal_dynamics_analysis()
-        
+
         # Structural Goals
         print("\n=== Structural Goals ===")
         influence_analysis = analyzer.influence_estimation()
         propagation_analysis = analyzer.propagation_patterns_analysis()
         vulnerability_analysis = analyzer.network_vulnerability_analysis()
-        
+
         # Compile all results
         results = {
             'hate_comments_list': hate_comments,
@@ -2147,10 +2154,10 @@ def main():
                 'network_vulnerability': vulnerability_analysis
             }
         }
-        
+
         # Save results
         analyzer.save_results(results)
-        
+
         print("\n=== Analysis Summary ===")
         print(f"Hate comments analyzed: {len(hate_comments)}")
         print(f"Top n-grams extracted: {len(top_ngrams)}")
@@ -2160,20 +2167,20 @@ def main():
         print(f"Edge-level prediction accuracy: {edge_metrics.get('accuracy', 0):.3f}")
         print(f"Influential users identified: {len(influence_analysis['influential_users'])}")
         print(f"Vulnerable threads identified: {len(vulnerability_analysis['thread_vulnerability'])}")
-    
+
     if args.mode in ['diffusion', 'both']:
         print("\n=== Diffusion Prediction ===")
-        
+
         # Initialize diffusion predictor
         predictor = DiffusionPredictor(config)
-        
+
         # Load data and run diffusion prediction
         predictor.load_data()
         diffusion_results = predictor.run_diffusion_prediction()
-        
+
         # Save diffusion results
         save_diffusion_results(diffusion_results, config)
-        
+
         print("\n=== Diffusion Summary ===")
         print(f"Scenarios analyzed: {diffusion_results.get('num_scenarios', 0)}")
         print(f"Hit@1: {diffusion_results.get('hit_at_k', {}).get(1, 0):.3f}")
@@ -2181,7 +2188,7 @@ def main():
         print(f"Hit@10: {diffusion_results.get('hit_at_k', {}).get(10, 0):.3f}")
         print(f"MRR: {diffusion_results.get('mrr', 0):.3f}")
         print(f"Jaccard: {diffusion_results.get('jaccard', 0):.3f}")
-    
+
     print("\nAnalysis completed successfully!")
 
 if __name__ == "__main__":

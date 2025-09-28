@@ -5,32 +5,42 @@ Temporal Graph Neural Network (TGNN) Model Implementation.
 Implements TGAT/TGN architectures for hate speech classification and diffusion prediction.
 """
 
+import argparse
+import json
+import warnings
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, GATConv
-import numpy as np
-import pandas as pd
-import argparse
-from pathlib import Path
 import yaml
-import json
-from tqdm import tqdm
-from sklearn.metrics import classification_report, roc_auc_score, f1_score, accuracy_score, precision_score, recall_score
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
 from sklearn.model_selection import train_test_split
-import warnings
+from torch_geometric.nn import GATConv, GCNConv
+from tqdm import tqdm
+
 warnings.filterwarnings('ignore')
 
-from torch_geometric.data import Data
 from sentence_transformers import SentenceTransformer
+from torch_geometric.data import Data
+
 
 def load_config(config_path):
     """
     Load configuration from YAML file.
-    
+
     Args:
         config_path (str): Path to the configuration file
-        
+
     Returns:
         dict: Configuration dictionary
     """
@@ -46,16 +56,16 @@ def load_config(config_path):
 class TemporalAttention(nn.Module):
     """
     Temporal attention mechanism for TGAT.
-    
+
     This module implements temporal attention to capture how node representations
     evolve over time. It uses timestamp information to weight the importance of
     different temporal interactions.
-    
+
     Args:
         input_dim (int): Dimension of input node features
         hidden_dim (int): Dimension of hidden representations
     """
-    
+
     def __init__(self, input_dim, hidden_dim):
         super(TemporalAttention, self).__init__()
         self.input_dim = input_dim
@@ -63,7 +73,7 @@ class TemporalAttention(nn.Module):
 
         # Layer normalization for stability
         self.layer_norm = nn.LayerNorm(input_dim)
-        
+
     def forward(self, x, edge_index, timestamps):
         """
         Apply temporal normalization (simplified implementation).
@@ -80,112 +90,112 @@ class TemporalAttention(nn.Module):
 
 class TGATLayer(nn.Module):
     """Temporal Graph Attention Network layer."""
-    
+
     def __init__(self, input_dim, hidden_dim, num_heads=4):
         super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads
-        
+
         # Temporal attention
         self.temporal_attention = TemporalAttention(input_dim, hidden_dim)
-        
+
         # Graph attention
         self.graph_attention = GATConv(hidden_dim, hidden_dim // num_heads, heads=num_heads)
-        
+
         # Normalization and activation
         self.norm = nn.LayerNorm(hidden_dim)
         self.dropout = nn.Dropout(0.1)
-        
+
     def forward(self, x, edge_index, edge_attr, timestamps):
         """Forward pass through TGAT layer."""
         # Apply temporal attention
         x_temporal = self.temporal_attention(x, edge_index, timestamps)
-        
+
         # Apply graph attention
         x_graph = self.graph_attention(x_temporal, edge_index)
-        
+
         # Residual connection and normalization
         x_out = self.norm(x_temporal + self.dropout(x_graph))
-        
+
         return x_out
 
 class TGNLayer(nn.Module):
     """Temporal Graph Network layer with memory."""
-    
+
     def __init__(self, input_dim, hidden_dim, memory_dim):
         super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.memory_dim = memory_dim
-        
+
         # Memory update
         self.memory_updater = nn.GRUCell(input_dim, memory_dim)
-        
+
         # Message function
         self.message_function = nn.Sequential(
             nn.Linear(input_dim + memory_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim)
         )
-        
+
         # Aggregation
         self.aggregator = nn.Linear(hidden_dim, hidden_dim)
-        
+
     def forward(self, x, edge_index, edge_attr, timestamps, memory):
         """Forward pass through TGN layer."""
         # Update memory (simplified)
         new_memory = self.memory_updater(x.mean(dim=0, keepdim=True), memory)
-        
+
         # Compute messages
         memory_expanded = new_memory.expand(x.size(0), -1)
         combined_features = torch.cat([x, memory_expanded], dim=-1)
         messages = self.message_function(combined_features)
-        
+
         # Aggregate messages
         x_out = self.aggregator(messages)
-        
+
         return x_out, new_memory
 
 class TGNNModel(nn.Module):
     """Complete TGNN model for hate speech analysis."""
-    
+
     def __init__(self, config):
         super().__init__()
         self.config = config
         tgnn_config = config.get('tgnn', {})
-        
+
         self.model_type = tgnn_config.get('model_type', 'TGAT')
         self.input_dim = tgnn_config.get('input_dim', 781)  # BERT + user + subreddit + node type features
         self.hidden_dim = tgnn_config.get('hidden_dim', 128)
         self.num_layers = tgnn_config.get('num_layers', 3)  # Changed from 2 to 3
         self.num_classes = tgnn_config.get('num_classes', 2)
         self.dropout = tgnn_config.get('dropout', 0.1)
-        
+
         # Input projection
         self.input_projection = nn.Linear(self.input_dim, self.hidden_dim)
-        
+
         # TGNN layers
         if self.model_type == 'TGAT':
             self.tgnn_layers = nn.ModuleList([
-                TGATLayer(self.hidden_dim, self.hidden_dim) 
+                TGATLayer(self.hidden_dim, self.hidden_dim)
                 for _ in range(self.num_layers)
             ])
         elif self.model_type == 'TGN':
             self.memory_dim = tgnn_config.get('memory_dim', 64)
             self.memory = nn.Parameter(torch.randn(1, self.memory_dim))
             self.tgnn_layers = nn.ModuleList([
-                TGNLayer(self.hidden_dim, self.hidden_dim, self.memory_dim) 
+                TGNLayer(self.hidden_dim, self.hidden_dim, self.memory_dim)
                 for _ in range(self.num_layers)
             ])
         elif self.model_type == 'TGNN':
             # Simple TGNN implementation using GCN with temporal features
             self.tgnn_layers = nn.ModuleList([
-                GCNConv(self.hidden_dim, self.hidden_dim) 
+                GCNConv(self.hidden_dim, self.hidden_dim)
                 for _ in range(self.num_layers)
             ])
             self.temporal_encoder = nn.Linear(1, self.hidden_dim)  # Encode timestamps
-        
+
         # Classification head (binary classification - single output)
         self.hate_classifier = nn.Sequential(
             nn.Linear(self.hidden_dim, self.hidden_dim // 2),
@@ -193,7 +203,7 @@ class TGNNModel(nn.Module):
             nn.Dropout(self.dropout),
             nn.Linear(self.hidden_dim // 2, 1)  # Single output for binary classification with BCEWithLogitsLoss
         )
-        
+
         # Diffusion prediction head
         self.diffusion_predictor = nn.Sequential(
             nn.Linear(self.hidden_dim * 2, self.hidden_dim),
@@ -201,7 +211,7 @@ class TGNNModel(nn.Module):
             nn.Dropout(self.dropout),
             nn.Linear(self.hidden_dim, 1)
         )
-        
+
         # Time prediction head
         self.time_predictor = nn.Sequential(
             nn.Linear(self.hidden_dim * 2, self.hidden_dim),
@@ -209,17 +219,17 @@ class TGNNModel(nn.Module):
             nn.Dropout(self.dropout),
             nn.Linear(self.hidden_dim, 1)
         )
-    
+
     def forward(self, data, task='classification'):
         """Forward pass for different tasks."""
         x = data.x
         edge_index = data.edge_index
         edge_attr = data.edge_attr
         timestamps = data.edge_time
-        
+
         # Input projection
         x = self.input_projection(x)
-        
+
         # Apply TGNN layers
         if self.model_type == 'TGAT':
             for layer in self.tgnn_layers:
@@ -237,38 +247,38 @@ class TGNNModel(nn.Module):
                     x = x + x_new
                 else:
                     x = x_new
-            
+
             # Add temporal information as node features if available
             if timestamps is not None and len(timestamps) == x.size(0):
                 # Only add if timestamps match node count
                 timestamps_norm = (timestamps - timestamps.min()) / (timestamps.max() - timestamps.min() + 1e-8)
                 temporal_emb = self.temporal_encoder(timestamps_norm.unsqueeze(-1))
                 x = x + temporal_emb
-        
+
         if task == 'classification':
             # Node classification
             return self.hate_classifier(x)
-        
+
         elif task == 'diffusion':
             # Edge prediction for diffusion
             src_nodes = x[edge_index[0]]
             dst_nodes = x[edge_index[1]]
             edge_features = torch.cat([src_nodes, dst_nodes], dim=-1)
             return self.diffusion_predictor(edge_features)
-        
+
         elif task == 'time_prediction':
             # Time prediction for interactions
             src_nodes = x[edge_index[0]]
             dst_nodes = x[edge_index[1]]
             edge_features = torch.cat([src_nodes, dst_nodes], dim=-1)
             return self.time_predictor(edge_features)
-        
+
         else:
             return x  # Return embeddings
 
 class TGNNTrainer:
     """Trainer for TGNN models."""
-    
+
     def __init__(self, model, config):
         self.model = model
         self.config = config
@@ -332,7 +342,7 @@ class TGNNTrainer:
             print(f"Best threshold: {best_thresh:.3f} with F1: {best_f1:.3f}")
             self.best_threshold = best_thresh
             return best_thresh
-        
+
     def prepare_data(self, graph_data):
         """
         Data is already prepared with masks during loading.
@@ -347,90 +357,90 @@ class TGNNTrainer:
         self._log_data_statistics(graph_data)
 
         return graph_data
-    
+
     def _create_user_labels(self, num_nodes, graph_data):
         """
         Use labels already created in graph_data from CSV.
-        
+
         Args:
-            num_nodes (int): Number of nodes 
+            num_nodes (int): Number of nodes
             graph_data: Graph data containing labels
-            
+
         Returns:
             list: Node labels (0 for normal, 1 for hate speech)
         """
         print("Using labels from graph data")
         return graph_data.y.cpu().numpy().tolist()
-    
+
     def _build_user_hate_mapping(self, balanced_df):
         """
         Build a mapping from usernames to hate speech labels.
-        
+
         Args:
             balanced_df: Balanced dataset DataFrame
-            
+
         Returns:
             dict: Mapping from username to boolean hate flag
         """
         user_hate_map = {}
-        
+
         for _, row in balanced_df.iterrows():
             author = row['author']
             is_hate_post = (row['binary_label'] == 1)
-            
+
             # Initialize user if not seen before
             if author not in user_hate_map:
                 user_hate_map[author] = False
-            
+
             # Mark user as hate speech user if they have any hate posts
             if is_hate_post:
                 user_hate_map[author] = True
-        
+
         return user_hate_map
-    
+
     def _get_username_by_index(self, user_idx, graph_data):
         """
         Get username for a given user index through reverse lookup.
-        
+
         Args:
             user_idx (int): User node index
             graph_data: Graph data containing user mappings
-            
+
         Returns:
             str or None: Username if found, None otherwise
         """
         user_to_id_mapping = getattr(graph_data, 'user_to_id', {})
-        
+
         for username, idx in user_to_id_mapping.items():
             if idx == user_idx:
                 return username
-        
+
         return None
-    
+
     def _create_train_test_split(self, graph_data, num_nodes):
         """
         Create training and testing masks for nodes.
-        
+
         Args:
             graph_data: Graph data to add masks to
             num_nodes (int): Number of nodes
         """
         # Split node indices into train and test sets
         train_nodes, test_nodes = train_test_split(
-            range(num_nodes), 
+            range(num_nodes),
             test_size=0.2,  # 20% for testing
             random_state=42,  # For reproducibility
             stratify=graph_data.y.cpu().numpy()  # Maintain label balance
         )
-        
+
         # Create boolean masks for training and testing
         graph_data.train_mask = torch.zeros(num_nodes, dtype=torch.bool).to(self.device)
         graph_data.test_mask = torch.zeros(num_nodes, dtype=torch.bool).to(self.device)
-        
+
         # Set mask values
         graph_data.train_mask[train_nodes] = True
         graph_data.test_mask[test_nodes] = True
-    
+
     def _log_data_statistics(self, graph_data):
         """
         Log statistics about the prepared data with semi-supervised learning info.
@@ -454,7 +464,7 @@ class TGNNTrainer:
         print(f"Total nodes: {total_nodes} ({labelled_nodes} labelled + {unlabelled_nodes} unlabelled)")
         print(f"Data split: {train_count} train, {val_count} val, {test_count} test")
         print(f"Label distribution: {hate_count} hate, {normal_count} normal")
-    
+
     def train_classification(self, graph_data, epochs=100):
         """Train hate speech classification task with semi-supervised learning."""
         print("Training hate speech classification with semi-supervised learning...")
@@ -532,7 +542,12 @@ class TGNNTrainer:
             true_labels = eval_labels.cpu().numpy()
 
             # Compute metrics
-            from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+            from sklearn.metrics import (
+                accuracy_score,
+                f1_score,
+                precision_score,
+                recall_score,
+            )
 
             accuracy = accuracy_score(true_labels, pred_binary)
             precision = precision_score(true_labels, pred_binary, zero_division=0)
@@ -549,13 +564,13 @@ class TGNNTrainer:
     def evaluate_model(self, graph_data):
         """Comprehensive model evaluation."""
         print("Evaluating model...")
-        
+
         self.model.eval()
         with torch.no_grad():
             # Classification evaluation
             out = self.model(graph_data, task='classification')
             user_out = out[:graph_data.num_users]
-            
+
             # Use labelled test nodes only
             test_labelled_mask = graph_data.test_mask & graph_data.label_mask
 
@@ -575,10 +590,10 @@ class TGNNTrainer:
             pred = (probs > threshold).long()
             print(f"Using threshold: {threshold:.3f} (hate ratio: {hate_ratio:.4f})")
             true_labels = test_labels
-            
+
             # Compute metrics
             accuracy = (pred == true_labels).float().mean().item()
-            
+
             # Debug: Check prediction distribution
             if len(probs.shape) == 0:  # Single value
                 hate_probs = probs.cpu().numpy().reshape(1)
@@ -591,14 +606,14 @@ class TGNNTrainer:
                 print(f"True labels: {true_labels.cpu().numpy().sum()} hate out of {len(true_labels)} total")
             else:
                 print("No test data to evaluate")
-            
+
             # Convert to numpy for sklearn metrics
             pred_np = pred.cpu().numpy()
             true_np = true_labels.cpu().numpy()
-            
+
             # Classification report
             report = classification_report(true_np, pred_np, output_dict=True)
-            
+
             # ROC AUC - handle edge cases
             try:
                 if len(np.unique(true_np)) > 1:  # Need both classes for AUC
@@ -608,7 +623,7 @@ class TGNNTrainer:
             except Exception as e:
                 print(f"AUC calculation failed: {e}")
                 auc = 0.5
-            
+
          # Handle case where class '1' might not exist in predictions
             if '1' in report:
                 precision = report['1']['precision']
@@ -618,7 +633,7 @@ class TGNNTrainer:
                 precision = 0.0
                 recall = 0.0
                 f1 = 0.0
-                
+
             metrics = {
                 'accuracy': accuracy,
                 'precision': precision,
@@ -626,7 +641,7 @@ class TGNNTrainer:
                 'f1': f1,
                 'auc': auc
             }
-            
+
             return metrics
 
 def load_temporal_graph(config):
@@ -842,7 +857,7 @@ def build_graph_from_csv(df):
             train_mask.append(False)
             val_mask.append(False)
             test_mask.append(False)
-    
+
     # Build edges based on reply relationships
     print("Building edges from reply relationships...")
     edges = []
@@ -905,18 +920,18 @@ def build_graph_from_csv(df):
 def save_model_results(model, metrics, config):
     """Save trained model and results."""
     print("Saving model and results...")
-    
+
     artifacts_dir = Path(config['paths']['artifacts_dir'])
     artifacts_dir.mkdir(exist_ok=True)
-    
+
     # Save model
     model_path = artifacts_dir / 'tgnn_model.pt'
     torch.save(model.state_dict(), model_path)
-    
+
     # Save metrics
     with open(artifacts_dir / 'tgnn_metrics.json', 'w') as f:
         json.dump(metrics, f, indent=2)
-    
+
     # Save model config
     model_config = {
         'model_type': model.model_type,
@@ -925,10 +940,10 @@ def save_model_results(model, metrics, config):
         'num_layers': model.num_layers,
         'num_classes': model.num_classes
     }
-    
+
     with open(artifacts_dir / 'tgnn_model_config.json', 'w') as f:
         json.dump(model_config, f, indent=2)
-    
+
     print(f"Model and results saved to {artifacts_dir}")
 
 def main():
@@ -937,7 +952,7 @@ def main():
     parser.add_argument("--hidden", type=int, default=32, help="Hidden dimension")  # Test version: 32 dim
     parser.add_argument("--model_type", type=str, default='TGNN', choices=['TGAT', 'TGN', 'TGNN'], help="Model type")
     args = parser.parse_args()
-    
+
     # Create simple config
     config = {
         'tgnn': {
@@ -955,32 +970,32 @@ def main():
             'artifacts_dir': 'artifacts'
         }
     }
-    
+
     print("=== TGNN Model Training ===")
-    
+
     # Load temporal graph
     graph_data = load_temporal_graph(config)
-    
+
     # Update input dimension based on actual features
     config['tgnn']['input_dim'] = graph_data.x.shape[1]
-    
+
     # Initialize model
     model = TGNNModel(config)
     print(f"Initialized {model.model_type} model with {sum(p.numel() for p in model.parameters())} parameters")
-    
+
     # Initialize trainer
     trainer = TGNNTrainer(model, config)
-    
+
     # Train classification task
     best_acc = trainer.train_classification(graph_data, epochs=args.epochs)
-    
+
     # Final evaluation on test set
     print("\n=== Final Evaluation on Test Set ===")
     metrics = trainer.evaluate_with_threshold(graph_data, use_test=True)
-    
+
     # Save results
     save_model_results(model, metrics, config)
-    
+
     print(f"\n=== TGNN Training Summary ===")
     print(f"Model: {model.model_type}")
     print(f"Best Accuracy: {best_acc:.4f}")

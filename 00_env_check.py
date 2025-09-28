@@ -4,17 +4,18 @@ Environment check script for Reddit data analysis pipeline.
 Checks Python version and required packages.
 """
 
-import sys
-import subprocess
-import importlib
 import argparse
+import importlib
+import subprocess
+import sys
 from pathlib import Path
+
 
 def check_python_version():
     """Check Python version."""
     version = sys.version_info
     print(f"Python version: {version.major}.{version.minor}.{version.micro}")
-    
+
     if version.major < 3 or (version.major == 3 and version.minor < 8):
         print("WARNING: Python 3.8+ recommended")
     else:
@@ -46,16 +47,16 @@ def main():
     parser = argparse.ArgumentParser(description="Check environment for Reddit analysis")
     parser.add_argument("--config", type=str, help="Config file path")
     args = parser.parse_args()
-    
+
     print("=== Environment Check ===")
-    
+
     # Check Python version
     check_python_version()
-    
+
     # Check required packages
     required_packages = [
         "pandas",
-        "numpy", 
+        "numpy",
         "pyarrow",
         "fastparquet",
         "tqdm",
@@ -66,31 +67,31 @@ def main():
         "pydantic",
         "ruamel.yaml"
     ]
-    
+
     missing_packages = []
-    
+
     for package in required_packages:
         if not check_package(package):
             missing_packages.append(package)
-    
+
     # Try to install missing packages
     if missing_packages:
         print(f"\nMissing packages: {missing_packages}")
         print("Attempting to install missing packages...")
-        
+
         for package in missing_packages:
             if package == "sklearn":
                 install_package("scikit-learn")
             else:
                 install_package(package)
-    
+
     # Final check
     print("\n=== Final Check ===")
     all_ok = True
     for package in required_packages:
         if not check_package(package):
             all_ok = False
-    
+
     if all_ok:
         print("\n✓ All required packages are available")
         return 0

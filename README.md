@@ -130,30 +130,30 @@ reddit/
 
 ### Model Performance Comparison
 
-| Model | Accuracy | Precision | Recall | F1-Score | AUC-ROC |
-|-------|----------|-----------|--------|----------|---------|
-| TF-IDF + LR (Baseline) | 93.65% | 94.22% | 92.98% | 93.60% | 97.74% |
-| **TGNN** | **96.10%** | **94.29%** | **97.63%** | **95.93%** | **99.33%** |
-| Improvement | +2.45% | +0.07% | +4.65% | +2.33% | +1.59% |
+| Model                  | Accuracy   | Precision  | Recall     | F1-Score   | AUC-ROC    |
+| ---------------------- | ---------- | ---------- | ---------- | ---------- | ---------- |
+| TF-IDF + LR (Baseline) | 93.65%     | 94.22%     | 92.98%     | 93.60%     | 97.74%     |
+| **TGNN**               | **96.10%** | **94.29%** | **97.63%** | **95.93%** | **99.33%** |
+| Improvement            | +2.45%     | +0.07%     | +4.65%     | +2.33%     | +1.59%     |
 
 ### Diffusion Prediction Results
 
-| Metric | Value | Description |
-|--------|-------|-------------|
-| Hit@1 | 20.0% | Top-1 prediction accuracy |
-| Hit@5 | 56.0% | Top-5 prediction accuracy |
-| Hit@10 | 76.0% | Top-10 prediction accuracy |
-| MRR | 37.3% | Mean Reciprocal Rank |
-| Jaccard | 17.2% | Set overlap similarity |
+| Metric  | Value | Description                |
+| ------- | ----- | -------------------------- |
+| Hit@1   | 20.0% | Top-1 prediction accuracy  |
+| Hit@5   | 56.0% | Top-5 prediction accuracy  |
+| Hit@10  | 76.0% | Top-10 prediction accuracy |
+| MRR     | 37.3% | Mean Reciprocal Rank       |
+| Jaccard | 17.2% | Set overlap similarity     |
 
 ### Moderation Strategy Effectiveness
 
-| Strategy | Effectiveness Score | Hate Reduction |
-|----------|-------------------|----------------|
-| Content Removal | 9.98 | 11.1% |
-| User Banning | 0.00 | 0.0% |
-| Subreddit Banning | 0.00 | 0.0% |
-| Combined Strategy | 4.18 | 4.7% |
+| Strategy          | Effectiveness Score | Hate Reduction |
+| ----------------- | ------------------- | -------------- |
+| Content Removal   | 9.98                | 11.1%          |
+| User Banning      | 0.00                | 0.0%           |
+| Subreddit Banning | 0.00                | 0.0%           |
+| Combined Strategy | 4.18                | 4.7%           |
 
 ## Configuration
 
@@ -183,16 +183,19 @@ diffusion:
 ## Technical Highlights
 
 ### Innovation
+
 - **Temporal Graph Neural Networks**: First application to hate speech diffusion prediction
 - **Multi-modal Feature Fusion**: Combines text, user behavior, and network structure features
 - **End-to-end Learning**: Complete pipeline from raw data to final predictions
 
 ### Engineering
+
 - **Modular Design**: Independent scripts for each component
 - **GPU Acceleration**: CUDA support for efficient training and inference
 - **Configuration-driven**: Flexible parameter management through YAML files
 
 ### Evaluation
+
 - **Multi-dimensional Metrics**: Classification, ranking, and diffusion prediction evaluation
 - **Realistic Validation**: Results validated against social network characteristics
 - **Comprehensive Visualization**: Rich charts and interactive visualizations
@@ -240,19 +243,13 @@ The system generates various output files in the `artifacts/` and `figures/` dir
 ## Performance Optimization
 
 ### GPU Acceleration
+
 - Ensure CUDA is properly installed
 - Use appropriate batch sizes for your GPU memory
 - Monitor GPU utilization during training
 
 ### Memory Management
+
 - Adjust `max_samples_per_file` based on available RAM
 - Use smaller batch sizes for memory-constrained environments
 - Consider data sampling for large datasets
-
-
-
-
-
-
-
-
