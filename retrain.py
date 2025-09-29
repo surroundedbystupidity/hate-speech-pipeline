@@ -2,6 +2,7 @@ import argparse
 import csv
 import gc
 import hashlib
+import math
 import os
 import sqlite3
 import time
@@ -255,18 +256,36 @@ def build_user_feats_binary(df, cls_col="class_self"):
 
 
 def build_user_feats_ordinal(df):
-    if "is_hate" not in df.columns:
+    # Try hate_label first, then is_hate as fallback
+    label_col = None
+    if "hate_label" in df.columns:
+        label_col = "hate_label"
+    elif "is_hate" in df.columns:
+        label_col = "is_hate"
+    else:
         return None
-    ih = pd.to_numeric(df["is_hate"], errors="coerce")
+
+    ih = pd.to_numeric(df[label_col], errors="coerce")
     if not ih.notna().any():
         return None
+
     df2 = df.copy()
-    df2["is_hate_ord"] = ih
-    # For ordinal categories: 0,1,2 are not hate. 3 and 4 are hate
-    df2["is_hate_ord_is_hate"] = df2["is_hate_ord"].isin([3, 4]).astype(int)
+    df2["hate_ord"] = ih
+
+    # Check if we have ordinal data (0-4) or binary data (0-1)
+    unique_vals = set(ih.dropna().astype(int).unique())
+    if {3, 4}.intersection(unique_vals):
+        # Ordinal case: 0,1,2 are not hate. 3 and 4 are hate
+        df2["hate_ord_is_hate"] = df2["hate_ord"].isin([3, 4]).astype(int)
+    elif {1}.intersection(unique_vals):
+        # Binary case: 1 is hate, 0 is not hate
+        df2["hate_ord_is_hate"] = df2["hate_ord"].isin([1]).astype(int)
+    else:
+        return None
+
     g = df2.groupby("author", dropna=False)
     total = g.size().rename("user_total_comments")
-    hate = g["is_hate_ord_is_hate"].sum().rename("user_hate_comments_ord")
+    hate = g["hate_ord_is_hate"].sum().rename("user_hate_comments_ord")
     ratio = (hate / total.replace(0, np.nan)).fillna(0).rename("user_hate_ratio_ord")
     return pd.concat([hate, ratio], axis=1).reset_index()
 

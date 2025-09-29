@@ -129,14 +129,12 @@ for time_bin, group in time_groups:
 
         # Comment indicator on node
         x[comment_idx, 1] = 1.0
-        if pd.notna(row.score_f):
-            x[comment_idx, 2] = float(row.score_f)  # Comment score
-        x[comment_idx, 2] = (
-            len(str(row.body)) if pd.notna(row.body) else 0
-        )  # Text length
-
+        # Comment score
+        x[comment_idx, 2] = float(row.score_f)
+        # Text length
+        x[comment_idx, 3] = len(str(row.body)) if pd.notna(row.body) else 0
+        # Toxic/non-toxic
         x[comment_idx, 3] = float(class_idx)
-
         # Subreddit as one-hot feature for comment (starting at index 4)
         x[comment_idx, 4 + subreddit_feature_idx] = 1.0
 
