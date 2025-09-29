@@ -109,7 +109,7 @@ for time_bin, group in time_groups:
     x = np.zeros((num_nodes, feature_dim), dtype=np.float32)
     y = np.zeros((num_nodes, 1), dtype=np.float32)
 
-    for _, row in group.iterrows():
+    for row in group.itertuples(index=False):
         author_idx = node2idx[f"author_{row.author}"]
         comment_idx = node2idx[f"comment_{row.id}"]
         class_idx = classes2idx[row.class_self]
@@ -137,7 +137,7 @@ for time_bin, group in time_groups:
                 author_idx,
                 i + 1,
             )
-            x[author_idx, i + 1] = row[user_feat_name]
+            x[author_idx, i + 1] = getattr(row, user_feat_name)
 
         # Comment indicator on node
         x[comment_idx, len(user_feature_names) + 1] = 1.0
@@ -159,7 +159,9 @@ for time_bin, group in time_groups:
                 comment_idx,
                 len(user_feature_names) + 4 + i + 1,
             )
-            x[comment_idx, len(user_feature_names) + 4 + i + 1] = row[comment_feat_name]
+            x[comment_idx, len(user_feature_names) + 4 + i + 1] = getattr(
+                row, comment_feat_name
+            )
 
         # Subreddit as one-hot feature for comment (starting at index 4)
         x[
@@ -172,13 +174,13 @@ for time_bin, group in time_groups:
         # Set labels (hate detection target)
         y[comment_idx, 0] = float(row.toxicity_probability_self)
 
-        if edges:
-            edge_index = np.array(edges, dtype=np.int64).T.copy()
-            edge_weight = np.array(edge_weights, dtype=np.float32).copy()
-            edge_index_list.append(edge_index)
-            edge_weight_list.append(edge_weight)
-            features_list.append(x)
-            labels_list.append(y)
+    if edges:
+        edge_index = np.array(edges, dtype=np.int64).T.copy()
+        edge_weight = np.array(edge_weights, dtype=np.float32).copy()
+        edge_index_list.append(edge_index)
+        edge_weight_list.append(edge_weight)
+        features_list.append(x)
+        labels_list.append(y)
 
 logger.info("Created %d temporal snapshots", len(edge_index_list))
 
