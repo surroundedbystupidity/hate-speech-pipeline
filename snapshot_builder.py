@@ -1,8 +1,8 @@
 import logging
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import torch
 from torch_geometric_temporal.signal import DynamicGraphTemporalSignal
 
 logger = logging.getLogger(__name__)
@@ -11,13 +11,9 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(module)s(%(lineno)d): %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-df = (
-    pd.read_csv(
-        "/Users/sujay/Library/CloudStorage/OneDrive-TheUniversityofAuckland/Course Documents/COMPSCI 760/Project/COMPSCI 760 - Group Project/Sample Data/addNew/retrain_validation10.csv"
-    )
-    .dropna()
-    .head(100)
-)
+df = pd.read_csv(
+    "/Users/sujay/Library/CloudStorage/OneDrive-TheUniversityofAuckland/Course Documents/COMPSCI 760/Project/COMPSCI 760 - Group Project/Sample Data/addNew/retrain_validation10.csv"
+).dropna()
 
 # Convert timestamp to datetime
 df["timestamp"] = pd.to_datetime(df["created_utc"], unit="s")
@@ -95,8 +91,11 @@ user_feature_names = [
     "user_hate_ratio_ord",
 ]
 
+time_vs_count = dict()
+
 for time_bin, group in time_groups:
     logger.info("Processing time window: %s (%d comments)", time_bin, len(group))
+    time_vs_count[str(time_bin)] = len(group)
 
     # Collect all edges for this time window
     edges = []
@@ -131,7 +130,7 @@ for time_bin, group in time_groups:
 
         # Add user features to author node
         for i, user_feat_name in enumerate(user_feature_names):
-            logger.info(
+            logger.debug(
                 "%s feature name = %s at index (%s, %s)",
                 "author",
                 user_feat_name,
@@ -153,7 +152,7 @@ for time_bin, group in time_groups:
 
         # Set all comment features.
         for i, comment_feat_name in enumerate(comment_feature_names):
-            logger.info(
+            logger.debug(
                 "%s feature name = %s at index (%s, %s)",
                 "comment",
                 comment_feat_name,
@@ -204,3 +203,20 @@ logger.info(
     first_snapshot.x.shape,
     first_snapshot.y.shape,
 )
+
+dates = list(time_vs_count.keys())
+counts = list(time_vs_count.values())
+
+plt.plot(dates, counts, marker="o")
+
+# Show only every 12th label
+step = 24
+xtick_positions = list(range(0, len(dates), step))
+xtick_labels = [dates[i] for i in xtick_positions]
+plt.xticks(xtick_positions, xtick_labels, rotation=45, ha="right")
+
+plt.xlabel("Time Window")
+plt.ylabel("Comment Count")
+plt.title("Comment Counts per Time Window")
+plt.tight_layout()
+plt.show()
