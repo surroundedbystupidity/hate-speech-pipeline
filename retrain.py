@@ -245,7 +245,7 @@ def build_user_feats_binary(df, cls_col="class_self"):
             return 0.0
         return float(np.mean(np.diff(v)))
 
-    avg_int = g["created_utc"].apply(mean_interval).rename("user_avg_posting_intervall")
+    avg_int = g["created_utc"].apply(mean_interval).rename("user_avg_posting_interval")
     avg_tod = (
         g["created_utc"]
         .apply(lambda s: float(np.mean(s.values % 86400)) if len(s) > 0 else 0.0)
@@ -445,7 +445,7 @@ def process_split(
         "user_total_comments",
         "user_hate_comments",
         "user_hate_ratio",
-        "user_avg_posting_intervall",
+        "user_avg_posting_interval",
         "user_avg_comment_time_of_day",
     ]
     # Add ordinal hate features if available (for ordinal categories 0,1,2=not hate; 3,4=hate)
