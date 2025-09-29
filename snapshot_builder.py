@@ -1,5 +1,6 @@
 import logging
 
+import numpy as np
 import pandas as pd
 import torch
 from torch_geometric_temporal.signal import DynamicGraphTemporalSignal
@@ -49,8 +50,8 @@ for comment in comments:
 
 
 num_nodes = len(node2idx)
-logger.info(f"Total nodes: {num_nodes} (authors + comments)")
-logger.info(f"Total subreddits as features: {num_subreddits}")
+logger.info("Total nodes: %d (authors + comments)", num_nodes)
+logger.info("Total subreddits as features: %d", num_subreddits)
 
 
 # Group comments into hourly windows.
@@ -65,9 +66,9 @@ edge_index_list = []
 edge_weight_list = []
 features_list = []
 labels_list = []
+
 comment_feature_names = [
     "toxicity_probability_self",
-    "class_self",
     "toxicity_probability_parent",
     "thread_depth",
     "score_f",
@@ -90,11 +91,12 @@ user_feature_names = [
     "user_hate_ratio",
     "user_avg_posting_interval",
     "user_avg_comment_time_of_day",
-    # "user_hate_comments_ord",
-    # "user_hate_ratio_ord",
+    "user_hate_comments_ord",
+    "user_hate_ratio_ord",
 ]
+
 for time_bin, group in time_groups:
-    logger.info(f"Processing time window: {time_bin} ({len(group)} comments)")
+    logger.info("Processing time window: %s (%d comments)", time_bin, len(group))
 
     # Collect all edges for this time window
     edges = []
@@ -105,8 +107,8 @@ for time_bin, group in time_groups:
     feature_dim = (
         4 + num_subreddits + len(comment_feature_names) + len(user_feature_names)
     )  # Base features + one-hot subreddit encoding
-    x = torch.zeros((num_nodes, feature_dim), dtype=torch.float)
-    y = torch.zeros((num_nodes, 1), dtype=torch.float)
+    x = np.zeros((num_nodes, feature_dim), dtype=np.float32)
+    y = np.zeros((num_nodes, 1), dtype=np.float32)
 
     for _, row in group.iterrows():
         author_idx = node2idx[f"author_{row.author}"]
@@ -127,29 +129,59 @@ for time_bin, group in time_groups:
         # Author indicator on node
         x[author_idx, 0] = 1.0
 
+        # Add user features to author node
+        for i, user_feat_name in enumerate(user_feature_names):
+            logger.info(
+                "%s feature name = %s at index (%s, %s)",
+                "author",
+                user_feat_name,
+                author_idx,
+                i + 1,
+            )
+            x[author_idx, i + 1] = row[user_feat_name]
+
         # Comment indicator on node
-        x[comment_idx, 1] = 1.0
+        x[comment_idx, len(user_feature_names) + 1] = 1.0
         # Comment score
-        x[comment_idx, 2] = float(row.score_f)
+        x[comment_idx, len(user_feature_names) + 2] = float(row.score_f)
         # Text length
-        x[comment_idx, 3] = len(str(row.body)) if pd.notna(row.body) else 0
+        x[comment_idx, len(user_feature_names) + 3] = (
+            len(str(row.body)) if pd.notna(row.body) else 0
+        )
         # Toxic/non-toxic
-        x[comment_idx, 3] = float(class_idx)
+        x[comment_idx, len(user_feature_names) + 4] = float(class_idx)
+
+        # Set all comment features.
+        for i, comment_feat_name in enumerate(comment_feature_names):
+            logger.info(
+                "%s feature name = %s at index (%s, %s)",
+                "comment",
+                comment_feat_name,
+                comment_idx,
+                len(user_feature_names) + 4 + i + 1,
+            )
+            x[comment_idx, len(user_feature_names) + 4 + i + 1] = row[comment_feat_name]
+
         # Subreddit as one-hot feature for comment (starting at index 4)
-        x[comment_idx, 4 + subreddit_feature_idx] = 1.0
+        x[
+            comment_idx,
+            len(user_feature_names)
+            + len(comment_feature_names)
+            + subreddit_feature_idx,
+        ] = 1.0
 
         # Set labels (hate detection target)
         y[comment_idx, 0] = float(row.toxicity_probability_self)
 
-    edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
-    edge_weight = torch.tensor(edge_weights, dtype=torch.float)
+        if edges:
+            edge_index = np.array(edges, dtype=np.int64).T.copy()
+            edge_weight = np.array(edge_weights, dtype=np.float32).copy()
+            edge_index_list.append(edge_index)
+            edge_weight_list.append(edge_weight)
+            features_list.append(x)
+            labels_list.append(y)
 
-    edge_index_list.append(edge_index)
-    edge_weight_list.append(edge_weight)
-    features_list.append(x)
-    labels_list.append(y)
-
-logger.info(f"Created {len(edge_index_list)} temporal snapshots")
+logger.info("Created %d temporal snapshots", len(edge_index_list))
 
 dataset = DynamicGraphTemporalSignal(
     edge_indices=edge_index_list,
@@ -159,14 +191,16 @@ dataset = DynamicGraphTemporalSignal(
 )
 
 # Verify the dataset
-logger.info(f"Dataset created with {dataset.snapshot_count} snapshots")
-logger.info(f"Node feature dimension: {dataset.features[0].shape}")
-logger.info(f"Number of nodes: {dataset.features[0].shape[0]}")
+logger.info("Dataset created with %d snapshots", dataset.snapshot_count)
+logger.info("Node feature dimension: %s", dataset.features[0].shape)
+logger.info("Number of nodes: %d", dataset.features[0].shape[0])
 
 # Example: Print first snapshot info
 first_snapshot = dataset[0]
+
 logger.info(
-    f"First snapshot - Edges: {first_snapshot.edge_index.shape[1]}, "
-    f"Features: {first_snapshot.x.shape}, "
-    f"Labels: {first_snapshot.y.shape}"
+    "First snapshot - Edges: %d, Features: %s, Labels: %s",
+    first_snapshot.edge_index.shape[1],
+    first_snapshot.x.shape,
+    first_snapshot.y.shape,
 )
