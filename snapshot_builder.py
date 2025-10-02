@@ -5,28 +5,31 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
-from torch_geometric_temporal.nn.recurrent import A3TGCN
+from torch_geometric_temporal.nn.recurrent import DCRNN
 from torch_geometric_temporal.signal import (
     DynamicGraphTemporalSignal,
     temporal_signal_split,
 )
+from tqdm import tqdm
+
+DEVICE = torch.device("mps" if torch.mps.is_available() else "cpu")
 
 
 class RecurrentGCN(torch.nn.Module):
-    def __init__(self, node_features, periods):
+    def __init__(self, node_features):
         super(RecurrentGCN, self).__init__()
-        self.recurrent = A3TGCN(node_features, 32, periods)
+        self.recurrent = DCRNN(node_features, 32, 1)
         self.linear = torch.nn.Linear(32, 1)
 
     def forward(self, x, edge_index, edge_weight):
-        h = self.recurrent(x.view(x.shape[0], 1, x.shape[1]), edge_index, edge_weight)
+        h = self.recurrent(x, edge_index, edge_weight)
         h = F.relu(h)
         h = self.linear(h)
         return h
 
 
 def load_and_prepare_data(csv_path, window_size_hours=1):
-    df = pd.read_csv(csv_path).dropna().head(1500)
+    df = pd.read_csv(csv_path).dropna().head(100)
     df["timestamp"] = pd.to_datetime(df["created_utc"], unit="s")
     df = df.sort_values("timestamp")
     df["time_bin"] = df["timestamp"].dt.floor(f"{window_size_hours}h")
@@ -131,48 +134,46 @@ def plot_time_vs_count(time_vs_count, step=24):
     plt.show()
 
 
-def train_and_evaluate(dataset, node_features=1, periods=4, epochs=50, train_ratio=0.2):
-    try:
-        from tqdm import tqdm
-    except ImportError:
-
-        def tqdm(iterable):
-            return iterable
-
+def train_and_evaluate(dataset, node_features=1, epochs=50, train_ratio=0.8):
     train_dataset, test_dataset = temporal_signal_split(
         dataset, train_ratio=train_ratio
     )
 
-    device = torch.device("mps" if torch.mps.is_available() else "cpu")
-    model = RecurrentGCN(node_features=node_features, periods=periods)
-    model = model.to(device)
+    model = RecurrentGCN(node_features).to(DEVICE)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+
+    # Training
     model.train()
     for epoch in tqdm(range(epochs)):
-        cost = 0
-        for time, snapshot in enumerate(train_dataset):
+        epoch_loss = 0
+        for snapshot in tqdm(train_dataset):
+            optimizer.zero_grad()
             y_hat = model(
-                snapshot.x.to(device),
-                snapshot.edge_index.to(device),
-                snapshot.edge_attr.to(device),
+                snapshot.x.to(DEVICE),
+                snapshot.edge_index.to(DEVICE),
+                snapshot.edge_attr.to(DEVICE),
             )
-            cost = cost + torch.mean((y_hat - snapshot.y.to(device)) ** 2)
-        cost = cost / (time + 1)
-        cost.backward()
-        optimizer.step()
-        optimizer.zero_grad()
-    model.eval()
-    cost = 0
-    for time, snapshot in enumerate(test_dataset):
-        y_hat = model(
-            snapshot.x.to(device),
-            snapshot.edge_index.to(device),
-            snapshot.edge_attr.to(device),
+            loss = F.mse_loss(y_hat, snapshot.y.to(DEVICE))
+            loss.backward()
+            optimizer.step()
+            epoch_loss += loss.item()
+        print(
+            f"Epoch {epoch+1}, Train Loss: {epoch_loss / train_dataset.snapshot_count:.4f}"
         )
-        cost = cost + torch.mean((y_hat - snapshot.y.to(device)) ** 2)
-    cost = cost / (time + 1)
-    cost = cost.item()
-    print("MSE: {:.4f}".format(cost))
+
+    # Evaluation
+    model.eval()
+    test_loss = 0
+    with torch.no_grad():
+        for snapshot in tqdm(test_dataset):
+            y_hat = model(
+                snapshot.x.to(DEVICE),
+                snapshot.edge_index.to(DEVICE),
+                snapshot.edge_attr.to(DEVICE),
+            )
+            test_loss += F.mse_loss(y_hat, snapshot.y.to(DEVICE)).item()
+    test_loss /= test_dataset.snapshot_count
+    print(f"Test MSE: {test_loss:.4f}")
 
 
 def main():
@@ -240,7 +241,12 @@ def main():
     )
     if plot_time_graph:
         plot_time_vs_count(time_vs_count, step=24)
-    train_and_evaluate(dataset, node_features=1, periods=4, epochs=50, train_ratio=0.2)
+    train_and_evaluate(
+        dataset,
+        node_features=dataset.features[0].shape[1],
+        epochs=50,
+        train_ratio=0.2,
+    )
 
 
 if __name__ == "__main__":
