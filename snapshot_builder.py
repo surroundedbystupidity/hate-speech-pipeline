@@ -21,8 +21,8 @@ class RecurrentGCN(torch.nn.Module):
         self.recurrent = DCRNN(node_features, 32, 1)
         self.linear = torch.nn.Linear(32, 1)
 
-    def forward(self, x, edge_index, edge_weight):
-        h = self.recurrent(x, edge_index, edge_weight)
+    def forward(self, x, edge_index):
+        h = self.recurrent(x, edge_index)
         h = F.relu(h)
         h = self.linear(h)
         return h
@@ -69,7 +69,7 @@ def build_temporal_graph(
     time_vs_count = dict()
     num_nodes = len(node2idx)
     for time_bin, group in time_groups:
-        logging.info("Processing time window: %s (%d comments)", time_bin, len(group))
+        logging.debug("Processing time window: %s (%d comments)", time_bin, len(group))
         time_vs_count[str(time_bin)] = len(group)
         edges = []
         edge_weights = []
@@ -116,7 +116,6 @@ def build_temporal_graph(
             edge_weight_list.append(edge_weight)
             features_list.append(x)
             labels_list.append(y)
-    logging.info("Created %d temporal snapshots", len(edge_index_list))
     return edge_index_list, edge_weight_list, features_list, labels_list, time_vs_count
 
 
@@ -144,22 +143,28 @@ def train_and_evaluate(dataset, node_features=1, epochs=50, train_ratio=0.8):
 
     # Training
     model.train()
-    for epoch in tqdm(range(epochs)):
+    min_loss = 1
+    best_epoch = 0
+    for epoch in tqdm(range(epochs), "Epochs"):
         epoch_loss = 0
-        for snapshot in tqdm(train_dataset):
+        for snapshot in train_dataset:
             optimizer.zero_grad()
             y_hat = model(
                 snapshot.x.to(DEVICE),
                 snapshot.edge_index.to(DEVICE),
-                snapshot.edge_attr.to(DEVICE),
             )
             loss = F.mse_loss(y_hat, snapshot.y.to(DEVICE))
             loss.backward()
             optimizer.step()
             epoch_loss += loss.item()
-        print(
-            f"Epoch {epoch+1}, Train Loss: {epoch_loss / train_dataset.snapshot_count:.4f}"
-        )
+        if min_loss > epoch_loss:
+            min_loss = epoch_loss
+            best_epoch = epoch + 1
+    logging.info(
+        "Best Epoch %d, Train Loss: %.4f",
+        best_epoch,
+        min_loss / train_dataset.snapshot_count,
+    )
 
     # Evaluation
     model.eval()
@@ -169,11 +174,10 @@ def train_and_evaluate(dataset, node_features=1, epochs=50, train_ratio=0.8):
             y_hat = model(
                 snapshot.x.to(DEVICE),
                 snapshot.edge_index.to(DEVICE),
-                snapshot.edge_attr.to(DEVICE),
             )
             test_loss += F.mse_loss(y_hat, snapshot.y.to(DEVICE)).item()
     test_loss /= test_dataset.snapshot_count
-    print(f"Test MSE: {test_loss:.4f}")
+    logging.info("Test MSE: %.4f", test_loss)
 
 
 def main():
