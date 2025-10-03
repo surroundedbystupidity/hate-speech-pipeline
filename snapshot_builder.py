@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric_temporal.nn.recurrent import DCRNN
 from torch_geometric_temporal.signal import (
@@ -16,20 +17,25 @@ DEVICE = torch.device("mps" if torch.mps.is_available() else "cpu")
 
 
 class RecurrentGCN(torch.nn.Module):
-    def __init__(self, node_features):
-        super(RecurrentGCN, self).__init__()
+    def __init__(self, node_features, hidden_dim=32):
+        super().__init__()
         self.recurrent = DCRNN(node_features, 32, 1)
-        self.linear = torch.nn.Linear(32, 1)
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(hidden_dim, 1),
+            nn.Sigmoid(),
+        )
 
     def forward(self, x, edge_index):
         h = self.recurrent(x, edge_index)
-        h = F.relu(h)
-        h = self.linear(h)
-        return h
+        out = self.fc(h)
+        return out
 
 
 def load_and_prepare_data(csv_path, window_size_hours=1):
-    df = pd.read_csv(csv_path).dropna().head(100)
+    df = pd.read_csv(csv_path).dropna().head(200)
     df["timestamp"] = pd.to_datetime(df["created_utc"], unit="s")
     df = df.sort_values("timestamp")
     df["time_bin"] = df["timestamp"].dt.floor(f"{window_size_hours}h")
