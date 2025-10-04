@@ -60,7 +60,7 @@ class RecurrentGCN(nn.Module):
         self.recurrent = DCRNN(node_features, hidden_dim, K=1)
         self.fc = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
-            nn.LeakyReLU(),
+            nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, 1),
         )
@@ -142,7 +142,7 @@ def build_temporal_graph(
     time_vs_count = {}
 
     for time_bin, group in time_groups:
-        num_nodes = group.shape[0]  # now should only contain comment nodes
+        num_nodes = group.shape[0]
 
         logger.debug("Processing time window: %s (%d comments)", time_bin, num_nodes)
         time_vs_count[str(time_bin)] = len(group)
@@ -200,16 +200,12 @@ def build_temporal_graph(
                 edges.append([comment_idx, parent_idx])
                 edge_weights.append(1.0)
 
-            # ----------------------------
-            # Build comment node features
-            # ----------------------------
             feat_offset = 0
 
-            # Encode author_id (as numeric feature, could later one-hot/embed)
             x[comment_idx, feat_offset] = author2idx[f"author_{row.author}"]
             feat_offset += 1
 
-            # Author/user-level features
+            # User features
             for i, user_feat_name in enumerate(user_feature_names):
                 x[comment_idx, feat_offset + i] = getattr(row, user_feat_name)
             feat_offset += len(user_feature_names)
@@ -222,26 +218,25 @@ def build_temporal_graph(
             x[comment_idx, feat_offset] = len(str(row.body))
             feat_offset += 1
 
-            # Class label (toxic / non-toxic flag)
+            # Class label
             x[comment_idx, feat_offset] = float(class_idx)
             feat_offset += 1
 
-            # Extra comment features
+            # Comment features
             for i, comment_feat_name in enumerate(comment_feature_names):
                 x[comment_idx, feat_offset + i] = getattr(row, comment_feat_name)
             feat_offset += len(comment_feature_names)
 
-            # Body embedding (384-dim)
+            # Vector embedding (384)
             x[comment_idx, feat_offset : feat_offset + 384] = np.array(
                 row.body_emb, dtype=np.float32
             )
             feat_offset += 384
 
-            # Subreddit one-hot
+            # Subreddit
             x[comment_idx, feat_offset + subreddit_feature_idx] = 1.0
             feat_offset += num_subreddits
 
-            # Label (toxicity probability)
             y[comment_idx, 0] = row.toxicity_probability_self
 
         if edges:
@@ -532,10 +527,10 @@ def create_dataset(df: pd.DataFrame, author2idx, subreddit2idx, num_subreddits):
     return dataset, time_vs_count
 
 
-def main():
-    train_csv_path = "val_dataset_with_emb_sm.csv"
+def run():
+    train_csv_path = "val_dataset_with_emb.csv"
     test_csv_path = "test_dataset_with_emb_sm.csv"
-
+    logger.info("Preparing windows for %s hours.", WINDOW_SIZE_HOURS)
     df_train = load_and_prepare_data(train_csv_path, WINDOW_SIZE_HOURS)
     df_test = load_and_prepare_data(test_csv_path, WINDOW_SIZE_HOURS)
 
@@ -546,6 +541,20 @@ def main():
     # Build node mappings from combined data to ensure consistency
     df_combined = pd.concat([df_train, df_test], ignore_index=True)
     author2idx, subreddit2idx, num_subreddits = build_node_mappings(df_combined)
+
+    df_train = balance_score_bins(df_train)
+
+    # print(df_train["toxicity_probability_self"].describe())
+    # plt.hist(
+    #     df_train["toxicity_probability_self"],
+    #     bins=50,
+    #     alpha=0.7,
+    #     color="blue",
+    #     edgecolor="black",
+    # )
+    # plt.tight_layout()
+    # plt.show()
+    # return
 
     # Create datasets
     train_dataset, train_time_vs_count = create_dataset(
@@ -563,9 +572,31 @@ def main():
     trained_model = train_model(
         train_dataset,
         node_features=train_dataset.features[0].shape[1],
-        epochs=15,
+        epochs=5,
     )
     evaluate_model(trained_model, test_dataset)
+
+
+def balance_score_bins(df: pd.DataFrame) -> pd.DataFrame:
+    bins = [0.0, 0.20, 0.40, 0.60, 0.80, 1.00]
+    labels = ["bin1", "bin2", "bin3", "bin4", "bin5"]
+
+    df["toxicity_bin"] = pd.cut(
+        df["toxicity_probability_self"],
+        bins=bins,
+        labels=labels,
+        include_lowest=True,
+        right=True,
+    )
+
+    df["toxicity_bin"].value_counts().sort_index()
+    min_size = df["toxicity_bin"].value_counts().min()
+    print(f"Smallest bin size: {min_size}")
+    return (
+        df.groupby("toxicity_bin", group_keys=False)
+        .apply(lambda g: g.sample(n=min_size, random_state=42))
+        .reset_index(drop=True)
+    )
 
 
 def read_parent_cmts():
@@ -606,18 +637,5 @@ def read_parent_cmts():
         logger.warning("No parent_and_cmts CSV files found")
 
 
-if __name__ == "__main__":
-    main()
-
-    # plot_results()
-    # read_parent_cmts()
-
-    # plot_results()
-
-    # subprocess.run(
-    #     [
-    #         "open",
-    #         "/Users/sujay/Documents/Workspace/hate-speech-pipeline/test_predictions.csv",
-    #     ],
-    #     check=False,
-    # )
+run()
+# plot_results()
