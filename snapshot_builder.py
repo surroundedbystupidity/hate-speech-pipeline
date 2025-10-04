@@ -1,26 +1,51 @@
+import glob
 import logging
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn as nn
 from sklearn.metrics import mean_squared_error
-from torch import nn
-from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from torch_geometric_temporal.nn.recurrent import DCRNN
-from torch_geometric_temporal.signal import (
-    DynamicGraphTemporalSignal,
-    temporal_signal_split,
-)
+from torch_geometric_temporal.signal import DynamicGraphTemporalSignal
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
-DEVICE = torch.device("mps" if torch.mps.is_available() else "cpu")
+DEVICE = "mps"  # torch.device("mps" if torch.mps.is_available() else "cpu")
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-TOKENIZER = AutoTokenizer.from_pretrained(MODEL_NAME)
-MODEL = AutoModel.from_pretrained(MODEL_NAME).to(DEVICE)
 GENERATE_EMBEDDINGS = False
+PRINT_CORRELATION = False
+WINDOW_SIZE_HOURS = 2
+PLOT_TIME_GRAPH = False
+COMMENT_FEATURE_NAMES: list[str] = [
+    "toxicity_probability_self",
+    "toxicity_probability_parent",
+    "thread_depth",
+    "score_f",
+    "score_z",
+    "scorebin_0",
+    "scorebin_2",
+    "scorebin_3",
+    "scorebin_4",
+    "score_bin5",
+    "response_time",
+    "score_parent",
+    "hate_score_self",
+    "hate_score_ctx",
+]
+USER_FEATURE_NAMES: list[str] = [
+    "user_unique_subreddits",
+    "user_total_comments",
+    "user_hate_comments",
+    "user_hate_ratio",
+    "user_avg_posting_intervall",
+    "user_avg_comment_time_of_day",
+    "user_hate_comments_ord",
+    "user_hate_ratio_ord",
+]
+
 logging.basicConfig(
     level="INFO",
     format="%(asctime)s %(levelname)s %(module)s(%(lineno)d): %(message)s",
@@ -29,16 +54,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class RecurrentGCN(torch.nn.Module):
-    def __init__(self, node_features, hidden_dim=32):
+class RecurrentGCN(nn.Module):
+    def __init__(self, node_features, hidden_dim=256, dropout=0.1):
         super().__init__()
-        self.recurrent = DCRNN(node_features, 32, 1)
+        self.recurrent = DCRNN(node_features, hidden_dim, K=1)
         self.fc = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.2),
+            nn.LeakyReLU(),
+            nn.Dropout(dropout),
             nn.Linear(hidden_dim, 1),
-            nn.Sigmoid(),
         )
 
     def forward(self, x, edge_index):
@@ -47,47 +71,62 @@ class RecurrentGCN(torch.nn.Module):
         return out
 
 
-def load_and_prepare_data(csv_path, window_size_hours=0.5):
-    df = pd.read_csv(csv_path).dropna().sort_values(by="created_utc").tail(5000)
-    df["timestamp"] = pd.to_datetime(df["created_utc"], unit="s")
-    df = df.sort_values("timestamp")
+def load_and_prepare_data(csv_path, window_size_hours):
+    logger.info("Begin loading: %s", csv_path)
+
+    df = pd.read_csv(csv_path)
+
+    # Drop NAs and filter subreddit without regex overhead (regex is slower)
+    mask_valid = df["subreddit"].notna() & ~df["subreddit"].str.contains(" ")
+    df = df[mask_valid & df["created_utc"].notna()]
+
+    # Vectorized datetime conversion
+    df["timestamp"] = pd.to_datetime(df["created_utc"], unit="s", errors="coerce")
+    df = df[df["timestamp"].dt.year >= 2015]
+
+    # Precompute time bins once
     df["time_bin"] = df["timestamp"].dt.floor(f"{window_size_hours}h")
+
+    # Handle embeddings
     if GENERATE_EMBEDDINGS:
-        df["body_emb"] = list(generate_comment_embeddings(df, "body"))
+        df["body_emb"] = generate_comment_embeddings(df, "body")
+        df.to_csv("val_dataset_with_emb.csv", index=False)
     else:
-        # Convert list of embeddings as a string into a float vector.
-        df["body_emb"] = (
+        # String ops
+        trans = str.maketrans({"[": "", "]": "", "\n": " "})
+        cleaned = (
             df["body_emb"]
-            .str.translate(str.maketrans({"[": "", "]": "", "\n": " "}))
+            .astype(str)
+            .str.translate(trans)
             .str.replace(r"\s+", " ", regex=True)
             .str.strip()
         )
-        # Then vectorized parse
-        df["body_emb"] = df["body_emb"].apply(
-            lambda s: np.fromstring(s, sep=" ").tolist()
+
+        # Convert embeddings string to vector.
+        empty = np.array([], dtype=np.float32)
+        df["body_emb"] = cleaned.map(
+            lambda s: np.fromstring(s, dtype=np.float32, sep=" ") if s else empty
         )
+
+    logger.info("Finished loading: %s", csv_path)
     return df
 
 
 def build_node_mappings(df):
-    # authors = df["author"].unique()
-    comments = df["id"].unique()
+    authors = df["author"].unique()
     subreddits = df["subreddit"].unique()
-    node2idx = {}
+    author2idx = {}
     idx = 0
-    # for author in authors:
-    #     node2idx[f"author_{author}"] = idx
-    #     idx += 1
-    for comment in comments:
-        node2idx[f"comment_{comment}"] = idx
+    for author in authors:
+        author2idx[f"author_{author}"] = idx
         idx += 1
     subreddit2idx = {sub: idx for idx, sub in enumerate(subreddits)}
-    return node2idx, subreddit2idx, len(subreddits)
+    return author2idx, subreddit2idx, len(subreddits)
 
 
 def build_temporal_graph(
     df,
-    node2idx,
+    author2idx,
     subreddit2idx,
     num_subreddits,
     comment_feature_names,
@@ -99,6 +138,7 @@ def build_temporal_graph(
     edge_weight_list = []
     features_list = []
     labels_list = []
+    masks_list = []
     time_vs_count = {}
 
     for time_bin, group in time_groups:
@@ -117,17 +157,46 @@ def build_temporal_graph(
             + 1  # For author_id
             + 384  # Body text embeddings
         )
+
+        local_node2idx = {}
+        comment_ids = group["id"].to_list()
+        parent_ids = group["parent_id"].unique().tolist()
+        node_list = np.unique(comment_ids + parent_ids).tolist()
+
+        for i, c_id in enumerate(node_list):
+            local_node2idx[f"comment_{c_id}"] = i
+
+        logger.debug(
+            "Comments (%s) + parent nodes (%s) = %s",
+            num_nodes,
+            len(parent_ids),
+            num_nodes + len(parent_ids),
+        )
+        num_nodes += len(parent_ids)
+
+        mask = np.zeros(num_nodes, dtype=bool)
+        for i, c_id in enumerate(node_list):
+            if c_id in comment_ids:
+                mask[i] = True
+
+        # Feature and label on both parent and child comments, parent comments may be
+        # from before this timestep.
         x = np.zeros((num_nodes, feature_dim), dtype=np.float32)
         y = np.zeros((num_nodes, 1), dtype=np.float32)
 
-        for row in group.itertuples(index=False):
-            comment_idx = node2idx[f"comment_{row.id}"] % num_nodes
+        parent_and_cmts = df[df["id"].isin(node_list)]
+        # parent_and_cmts.drop("body_emb", axis=1).to_csv(
+        #     f"parent_and_cmts{datetime.datetime.now()}.csv"
+        # )
+        logger.debug("Final group shape = %s", parent_and_cmts.shape)
+        for row in parent_and_cmts.itertuples(index=False):
+            comment_idx = local_node2idx[f"comment_{row.id}"]
             class_idx = classes2idx[str(row.class_self)]
             subreddit_feature_idx = subreddit2idx[row.subreddit]
 
             # connect comment → parent comment if available
-            if pd.notna(row.parent_id) and f"comment_{row.parent_id}" in node2idx:
-                parent_idx = node2idx[f"comment_{row.parent_id}"]
+            if pd.notna(row.parent_id) and f"comment_{row.parent_id}" in local_node2idx:
+                parent_idx = local_node2idx[f"comment_{row.parent_id}"]
                 edges.append([comment_idx, parent_idx])
                 edge_weights.append(1.0)
 
@@ -137,9 +206,7 @@ def build_temporal_graph(
             feat_offset = 0
 
             # Encode author_id (as numeric feature, could later one-hot/embed)
-            x[comment_idx, feat_offset] = (
-                float(hash(row.author) % 1e6) / 1e6
-            )  # scaled ID
+            x[comment_idx, feat_offset] = author2idx[f"author_{row.author}"]
             feat_offset += 1
 
             # Author/user-level features
@@ -184,8 +251,16 @@ def build_temporal_graph(
             edge_weight_list.append(edge_weight)
             features_list.append(x)
             labels_list.append(y)
+            masks_list.append(mask)
 
-    return edge_index_list, edge_weight_list, features_list, labels_list, time_vs_count
+    return (
+        edge_index_list,
+        edge_weight_list,
+        features_list,
+        labels_list,
+        time_vs_count,
+        masks_list,
+    )
 
 
 def plot_time_vs_count(time_vs_count, step=24):
@@ -203,111 +278,154 @@ def plot_time_vs_count(time_vs_count, step=24):
 
 
 def generate_comment_embeddings(df, col_name, batch_size=96):
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = AutoModel.from_pretrained(MODEL_NAME).to(DEVICE)
     comments = df[col_name].to_list()
     loader = DataLoader(comments, batch_size=batch_size)
 
     all_embeddings = []
     for batch in tqdm(loader, desc="Generating embeddings"):
-        inputs = TOKENIZER(
+        inputs = tokenizer(
             batch, return_tensors="pt", padding=True, truncation=True
         ).to(DEVICE)
         with torch.no_grad():
-            outputs = MODEL(**inputs)
+            outputs = model(**inputs)
         emb = outputs.last_hidden_state.mean(dim=1)
         all_embeddings.append(emb.cpu())
     return torch.cat(all_embeddings).numpy()
 
 
-def train_and_evaluate(dataset, node_features=1, epochs=50, train_ratio=0.25):
-    train_dataset, test_dataset = temporal_signal_split(
-        dataset, train_ratio=train_ratio
-    )
+def train_model(
+    train_dataset: DynamicGraphTemporalSignal, node_features, epochs=50
+) -> RecurrentGCN:
+    train_masks = train_dataset.masks
 
-    train_cmt_count = 0
-    test_cmt_count = 0
-    for i in range(train_dataset.snapshot_count):
-        train_cmt_count += train_dataset[i].x.shape[0]
-
-    for i in range(test_dataset.snapshot_count):
-        test_cmt_count += test_dataset[i].x.shape[0]
-
-    logger.info(
-        "Train - snapshots = %s, comments = %s",
-        train_dataset.snapshot_count,
-        train_cmt_count,
-    )
-    logger.info(
-        "Test - snapshots = %s, comments = %s",
-        test_dataset.snapshot_count,
-        test_cmt_count,
-    )
-
-    model = RecurrentGCN(node_features).to(DEVICE)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+    model = RecurrentGCN(node_features=node_features, hidden_dim=128).to(DEVICE)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-4)
+    criterion = nn.BCEWithLogitsLoss()
 
     # Training
-    model.train()
-    min_loss = 1
     best_epoch = 0
-    for epoch in tqdm(range(epochs), "Epochs"):
-        epoch_loss = 0
-        for train_snapshot in train_dataset:
+    min_loss = float("inf")
+
+    for epoch in range(epochs):
+        model.train()
+        epoch_loss = 0.0
+
+        for idx, train_snapshot in enumerate(train_dataset):
             train_snapshot = train_snapshot.to(DEVICE)
+            train_snapshot.x = nn.functional.normalize(train_snapshot.x, dim=-1)
+            train_mask = torch.tensor(train_masks[idx], dtype=torch.bool, device=DEVICE)
+
             optimizer.zero_grad()
-            y_hat = model(
-                train_snapshot.x,
-                train_snapshot.edge_index,
+            y_hat = model(train_snapshot.x, train_snapshot.edge_index)
+
+            # ensure target is float tensor
+            loss = criterion(
+                y_hat[train_mask].view(-1),
+                train_snapshot.y[train_mask].float().view(-1),
             )
-            loss = F.mse_loss(y_hat, train_snapshot.y)
-            loss.backward()
+
+            num_masked = train_mask.sum().item()
+            normalized_loss = loss / num_masked
+
+            normalized_loss.backward()
+
+            # loss = criterion(
+            #     y_hat[train_mask].view(-1), train_snapshot.y[train_mask].view(-1)
+            # )
+            # loss = loss / accumulation_steps  # Scale loss
+            # loss.backward()
+
             optimizer.step()
-            epoch_loss += loss.item()
-        if min_loss > epoch_loss:
-            min_loss = epoch_loss
-            best_epoch = epoch + 1
+            optimizer.zero_grad()
+
+            epoch_loss += normalized_loss.item()
+
+            if epoch_loss < min_loss:
+                min_loss = epoch_loss
+                best_epoch = epoch + 1
+
+        logger.info("Epoch %03d | Loss: %.4f", epoch + 1, epoch_loss)
+
     logger.info(
         "Best Epoch %d, Train Loss: %.4f",
         best_epoch,
         min_loss / train_dataset.snapshot_count,
     )
+    return model
 
+
+def evaluate_model(model: RecurrentGCN, test_dataset: DynamicGraphTemporalSignal):
+    test_masks = test_dataset.masks
     # Evaluation
     model.eval()
-    test_loss = 0
-    with torch.no_grad():
-        for snapshot in test_dataset:
-            snapshot = snapshot.to(DEVICE)
-            y_hat = model(snapshot.x, snapshot.edge_index)
-            snapshot_loss = F.mse_loss(y_hat, snapshot.y).item()
-            test_loss += snapshot_loss
-            logger.debug("Snapshot Loss = %s", snapshot_loss)
-    test_loss /= test_dataset.snapshot_count
-    save_predictions_to_csv(test_dataset, model, DEVICE)
-    logger.info("Test Loss: %.4f", test_loss)
+    criterion = nn.BCEWithLogitsLoss()
+    test_loss = 0.0
 
-
-def save_predictions_to_csv(
-    test_dataset, model, device, output_path="test_predictions.csv"
-):
     all_preds = []
-    all_truths = []
-    all_indices = []
-    for snapshot in test_dataset:
-        y_hat = model(snapshot.x.to(device), snapshot.edge_index.to(device))
-        preds = y_hat.detach().cpu().numpy().flatten()
-        truths = snapshot.y.detach().cpu().numpy().flatten()
-        indices = np.arange(len(preds))
-        all_preds.extend(preds)
-        all_truths.extend(truths)
-        all_indices.extend(indices)
-    df_out = pd.DataFrame(
-        {
-            "node_index": all_indices,
-            "prediction": all_preds,
-            "ground_truth": all_truths,
-        }
+    all_labels = []
+
+    with torch.no_grad():
+        for idx, test_snapshot in enumerate(test_dataset):
+            test_snapshot = test_snapshot.to(DEVICE)
+            test_snapshot.x = nn.functional.normalize(test_snapshot.x, dim=-1)
+            test_mask = torch.tensor(test_masks[idx], dtype=torch.bool, device=DEVICE)
+            y_hat = model(test_snapshot.x, test_snapshot.edge_index)  # raw logits
+            # loss = criterion(
+            #     y_hat[test_mask].view(-1), test_snapshot.y[test_mask].float().view(-1)
+            # )
+
+            loss = criterion(
+                y_hat[test_mask].view(-1), test_snapshot.y[test_mask].view(-1)
+            )
+            # Normalize by number of masked nodes
+            num_masked = test_mask.sum().item()
+            normalized_loss = loss / num_masked
+
+            test_loss += normalized_loss.item()
+
+            # Convert logits to probabilities
+            probs = torch.sigmoid(y_hat).view(-1).cpu()
+            labels = test_snapshot.y.view(-1).cpu()
+
+            all_preds.append(probs)
+            all_labels.append(labels)
+
+            logger.debug(
+                "Snapshot Loss = %.4f | Pred Range: [%.3f, %.3f]",
+                loss.item(),
+                probs.min().item(),
+                probs.max().item(),
+            )
+
+        # Compute average test loss
+        test_loss /= test_dataset.snapshot_count
+
+    # Concatenate predictions for saving
+    all_preds = torch.cat(all_preds)
+    all_labels = torch.cat(all_labels)
+
+    # Example: save predictions
+    save_predictions_to_csv(all_preds, all_labels)
+
+    logger.info("Test Loss: %.4f", test_loss)
+    logger.info(
+        "Pred Range (All): [%.3f, %.3f], Mean: %.3f",
+        all_preds.min().item(),
+        all_preds.max().item(),
+        all_preds.mean().item(),
     )
 
+
+def save_predictions_to_csv(all_preds, all_labels, output_path="test_predictions.csv"):
+    df_out = pd.DataFrame(
+        {
+            "node_index": np.arange(len(all_preds)),
+            "prediction": all_preds,
+            "ground_truth": all_labels,
+        }
+    )
     df_out["residual"] = df_out["ground_truth"] - df_out["prediction"]
     df_out["abs_residual"] = df_out["residual"].abs()
     mse = mean_squared_error(df_out["ground_truth"], df_out["prediction"])
@@ -316,72 +434,190 @@ def save_predictions_to_csv(
     logger.info("Saved test predictions to %s", output_path)
 
 
-def main():
-
-    csv_path = "val_with_embeddings.csv"
-    window_size_hours = 1
-    plot_time_graph = False
-    comment_feature_names = [
-        "toxicity_probability_self",
-        "toxicity_probability_parent",
-        "thread_depth",
-        "score_f",
-        "score_z",
-        "scorebin_0",
-        "scorebin_2",
-        "scorebin_3",
-        "scorebin_4",
-        "score_bin5",
-        "response_time",
-        "score_parent",
-        "hate_score_self",
-        "hate_score_ctx",
-    ]
-    user_feature_names = [
-        "user_unique_subreddits",
-        "user_total_comments",
-        "user_hate_comments",
-        "user_hate_ratio",
-        "user_avg_posting_intervall",
-        "user_avg_comment_time_of_day",
-        "user_hate_comments_ord",
-        "user_hate_ratio_ord",
-    ]
-    df = load_and_prepare_data(csv_path, window_size_hours)
-    node2idx, subreddit2idx, num_subreddits = build_node_mappings(df)
-    edge_index_list, edge_weight_list, features_list, labels_list, time_vs_count = (
-        build_temporal_graph(
-            df,
-            node2idx,
-            subreddit2idx,
-            num_subreddits,
-            comment_feature_names,
-            user_feature_names,
-        )
+def get_correlation(df: pd.DataFrame):
+    df_analysis = df[COMMENT_FEATURE_NAMES + USER_FEATURE_NAMES].copy()
+    correlations = df_analysis.corr()["toxicity_probability_self"].sort_values(
+        ascending=False
     )
+    logger.info("Feature correlations with target:\n%s", correlations)
+
+
+def plot_results():
+    df_res = pd.read_csv(
+        "/Users/sujay/Documents/Workspace/hate-speech-pipeline/test_predictions.csv"
+    )
+
+    # Plot histograms for value distributions
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+    fig.suptitle("Distribution of Prediction Results", fontsize=16)
+
+    # Prediction histogram
+    axes[0, 0].hist(
+        df_res["prediction"], bins=50, alpha=0.7, color="blue", edgecolor="black"
+    )
+    axes[0, 0].set_title("Prediction Distribution")
+    axes[0, 0].set_xlabel("Prediction Value")
+    axes[0, 0].set_ylabel("Frequency")
+
+    # Ground truth histogram
+    axes[0, 1].hist(
+        df_res["ground_truth"], bins=50, alpha=0.7, color="green", edgecolor="black"
+    )
+    axes[0, 1].set_title("Ground Truth Distribution")
+    axes[0, 1].set_xlabel("Ground Truth Value")
+    axes[0, 1].set_ylabel("Frequency")
+
+    # Residual histogram
+    axes[1, 0].hist(
+        df_res["residual"], bins=50, alpha=0.7, color="red", edgecolor="black"
+    )
+    axes[1, 0].set_title("Residual Distribution")
+    axes[1, 0].set_xlabel("Residual Value (Ground Truth - Prediction)")
+    axes[1, 0].set_ylabel("Frequency")
+
+    # Absolute residual histogram
+    axes[1, 1].hist(
+        df_res["abs_residual"], bins=50, alpha=0.7, color="orange", edgecolor="black"
+    )
+    axes[1, 1].set_title("Absolute Residual Distribution")
+    axes[1, 1].set_xlabel("Absolute Residual Value")
+    axes[1, 1].set_ylabel("Frequency")
+
+    plt.tight_layout()
+    plt.show()
+
+    # Print summary statistics
+    logger.info(
+        "Summary Statistics: \n %s",
+        df_res[["prediction", "ground_truth", "residual", "abs_residual"]].describe(),
+    )
+
+
+def create_dataset(df: pd.DataFrame, author2idx, subreddit2idx, num_subreddits):
+    """Create a temporal graph dataset from a dataframe."""
+    (
+        edge_index_list,
+        edge_weight_list,
+        features_list,
+        labels_list,
+        time_vs_count,
+        masks_list,
+    ) = build_temporal_graph(
+        df,
+        author2idx,
+        subreddit2idx,
+        num_subreddits,
+        COMMENT_FEATURE_NAMES,
+        USER_FEATURE_NAMES,
+    )
+
     dataset = DynamicGraphTemporalSignal(
         edge_indices=edge_index_list,
         edge_weights=edge_weight_list,
         features=features_list,
         targets=labels_list,
+        masks=masks_list,
     )
+    cmt_count = 0
     logger.info("Dataset created with %d snapshots", dataset.snapshot_count)
-    logger.info("Number of nodes: %d", dataset.features[0].shape[0])
-    first_snapshot = dataset[0]
+
+    for train_snapshot in dataset:
+        cmt_count += train_snapshot.x.shape[0]
+
     logger.info(
-        "First snapshot - Edges: %d, Features: %s, Labels: %s",
-        first_snapshot.edge_index.shape[1],
-        first_snapshot.x.shape,
-        first_snapshot.y.shape,
+        "Snapshots = %s, comments = %s",
+        dataset.snapshot_count,
+        cmt_count,
     )
-    if plot_time_graph:
-        plot_time_vs_count(time_vs_count, step=24)
-    train_and_evaluate(
-        dataset,
-        node_features=dataset.features[0].shape[1],
-        epochs=10,
+    return dataset, time_vs_count
+
+
+def main():
+    train_csv_path = "val_dataset_with_emb_sm.csv"
+    test_csv_path = "test_dataset_with_emb_sm.csv"
+
+    df_train = load_and_prepare_data(train_csv_path, WINDOW_SIZE_HOURS)
+    df_test = load_and_prepare_data(test_csv_path, WINDOW_SIZE_HOURS)
+
+    if PRINT_CORRELATION:
+        get_correlation(df_train)
+        get_correlation(df_test)
+
+    # Build node mappings from combined data to ensure consistency
+    df_combined = pd.concat([df_train, df_test], ignore_index=True)
+    author2idx, subreddit2idx, num_subreddits = build_node_mappings(df_combined)
+
+    # Create datasets
+    train_dataset, train_time_vs_count = create_dataset(
+        df_train, author2idx, subreddit2idx, num_subreddits
     )
+    test_dataset, test_time_vs_count = create_dataset(
+        df_test, author2idx, subreddit2idx, num_subreddits
+    )
+
+    if PLOT_TIME_GRAPH:
+        plot_time_vs_count(train_time_vs_count, step=24)
+        plot_time_vs_count(test_time_vs_count, step=24)
+
+    # Use train dataset for training (you can modify this to use both datasets as needed)
+    trained_model = train_model(
+        train_dataset,
+        node_features=train_dataset.features[0].shape[1],
+        epochs=15,
+    )
+    evaluate_model(trained_model, test_dataset)
+
+
+def read_parent_cmts():
+    # Find all CSV files starting with "parent_and_cmts"
+    pattern = (
+        "/Users/sujay/Documents/Workspace/hate-speech-pipeline/parent_and_cmts*.csv"
+    )
+    csv_files = glob.glob(pattern)
+
+    logger.info("Found %d parent_and_cmts CSV files", len(csv_files))
+
+    # Read all CSV files and concatenate them
+    dataframes = []
+    for file_path in csv_files:
+        logger.info("Reading file: %s", file_path)
+        df = pd.read_csv(file_path)
+        dataframes.append(df)
+
+    # Concatenate all dataframes
+    if dataframes:
+        combined_df = pd.concat(dataframes, ignore_index=True)
+        logger.debug("Combined dataframe shape: %s", combined_df.shape)
+
+        # Prediction histogram
+        plt.hist(
+            combined_df["toxicity_probability_self"],
+            bins=50,
+            alpha=0.7,
+            color="blue",
+            edgecolor="black",
+        )
+        plt.xlabel("toxicity_probability_self")
+        plt.ylabel("Frequency")
+        plt.tight_layout()
+        plt.show()
+        return combined_df
+    else:
+        logger.warning("No parent_and_cmts CSV files found")
 
 
 if __name__ == "__main__":
     main()
+
+    # plot_results()
+    # read_parent_cmts()
+
+    # plot_results()
+
+    # subprocess.run(
+    #     [
+    #         "open",
+    #         "/Users/sujay/Documents/Workspace/hate-speech-pipeline/test_predictions.csv",
+    #     ],
+    #     check=False,
+    # )
