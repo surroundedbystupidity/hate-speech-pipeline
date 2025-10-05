@@ -2,7 +2,6 @@ import torch
 from torch import nn
 
 
-# Option 1: Weighted BCE to emphasize extreme values
 class WeightedBCELoss(nn.Module):
     def __init__(self, pos_weight=2.0):
         super().__init__()
@@ -39,7 +38,7 @@ class FocalLoss(nn.Module):
 
 
 class HybridLoss(nn.Module):
-    def __init__(self, mse_weight=0.5, margin=0):
+    def __init__(self, mse_weight=0.5, margin=0.9):
         super().__init__()
         self.mse_weight = mse_weight
         self.margin = margin

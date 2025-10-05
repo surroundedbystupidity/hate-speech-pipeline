@@ -8,16 +8,18 @@ import torch
 import torch.nn as nn
 from sklearn.metrics import mean_squared_error
 from torch.utils.data import DataLoader
-from torch_geometric_temporal.nn.recurrent import DCRNN
+from torch_geometric_temporal.nn import DCRNN
 from torch_geometric_temporal.signal import DynamicGraphTemporalSignal
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
+
+from loss_functions import FocalLoss, HybridLoss, WeightedBCELoss
 
 DEVICE = "mps"  # torch.device("mps" if torch.mps.is_available() else "cpu")
 MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 GENERATE_EMBEDDINGS = False
 PRINT_CORRELATION = False
-WINDOW_SIZE_HOURS = 2
+WINDOW_SIZE_HOURS = 1
 PLOT_TIME_GRAPH = False
 COMMENT_FEATURE_NAMES: list[str] = [
     "toxicity_probability_self",
@@ -54,8 +56,27 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class RecurrentGCN(nn.Module):
-    def __init__(self, node_features, hidden_dim=256, dropout=0.1):
+class AttentionLayer(nn.Module):
+    """Self-attention layer for graph nodes"""
+
+    def __init__(self, hidden_dim, num_heads=4, dropout=0.1):
+        super().__init__()
+        self.attention = nn.MultiheadAttention(
+            hidden_dim, num_heads=num_heads, dropout=dropout, batch_first=True
+        )
+        self.norm = nn.LayerNorm(hidden_dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        # x shape: [num_nodes, hidden_dim]
+        x_unsqueezed = x.unsqueeze(0)  # [1, num_nodes, hidden_dim]
+        attended, _ = self.attention(x_unsqueezed, x_unsqueezed, x_unsqueezed)
+        attended = attended.squeeze(0)  # [num_nodes, hidden_dim]
+        return self.norm(x + self.dropout(attended))
+
+
+class RecurrentGCN1(nn.Module):
+    def __init__(self, node_features, hidden_dim=128, dropout=0.1, num_heads=8):
         super().__init__()
         self.recurrent = DCRNN(node_features, hidden_dim, K=1)
         self.fc = nn.Sequential(
@@ -64,17 +85,85 @@ class RecurrentGCN(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, 1),
         )
+        self.attention = nn.MultiheadAttention(
+            embed_dim=hidden_dim, num_heads=num_heads, dropout=dropout, batch_first=True
+        )
 
     def forward(self, x, edge_index):
         h = self.recurrent(x, edge_index)
+        attn_out, _ = self.attention(h, h, h)
+        h = h + attn_out
         out = self.fc(h)
         return out
 
 
-def load_and_prepare_data(csv_path, window_size_hours):
-    logger.info("Begin loading: %s", csv_path)
+class RecurrentGCN(nn.Module):
+    """Enhanced model with attention and deeper architecture"""
 
-    df = pd.read_csv(csv_path)
+    def __init__(self, node_features, hidden_dim=256, dropout=0.15, num_gnn_layers=2):
+        super().__init__()
+
+        # Input transformation
+        self.input_transform = nn.Sequential(
+            nn.Linear(node_features, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+        )
+
+        # Multiple GNN layers
+        self.gnn_layers = nn.ModuleList()
+        for i in range(num_gnn_layers):
+            input_dim = hidden_dim if i > 0 else hidden_dim
+            self.gnn_layers.append(DCRNN(input_dim, hidden_dim, K=2))
+
+        # Attention mechanism
+        self.attention = AttentionLayer(hidden_dim, num_heads=4, dropout=dropout)
+
+        # Skip connection
+        self.skip_transform = nn.Linear(node_features, hidden_dim)
+
+        # Output layers with more capacity
+        self.output_layers = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout / 2),
+            nn.Linear(hidden_dim // 2, 1),
+        )
+
+        # Layer normalization for stability
+        self.layer_norms = nn.ModuleList(
+            [nn.LayerNorm(hidden_dim) for _ in range(num_gnn_layers)]
+        )
+
+    def forward(self, x, edge_index):
+        # Transform input
+        h = self.input_transform(x)
+        skip = self.skip_transform(x)
+
+        # Process through GNN layers with residual connections
+        for i, (gnn_layer, norm) in enumerate(zip(self.gnn_layers, self.layer_norms)):
+            h_new = gnn_layer(h, edge_index)
+            h_new = nn.functional.relu(h_new)
+            h = norm(h + h_new * 0.5)  # Residual with scaling
+
+        # Apply attention
+        h = self.attention(h)
+
+        # Combine with skip connection
+        h_combined = torch.cat([h, skip], dim=-1)
+
+        # Generate output
+        out = self.output_layers(h_combined)
+        return out
+
+
+def load_and_prepare_data(csv_path, window_size_hours):
+    df = pd.read_csv(csv_path).head(5000)
 
     # Drop NAs and filter subreddit without regex overhead (regex is slower)
     mask_valid = df["subreddit"].notna() & ~df["subreddit"].str.contains(" ")
@@ -108,7 +197,6 @@ def load_and_prepare_data(csv_path, window_size_hours):
             lambda s: np.fromstring(s, dtype=np.float32, sep=" ") if s else empty
         )
 
-    logger.info("Finished loading: %s", csv_path)
     return df
 
 
@@ -160,7 +248,7 @@ def build_temporal_graph(
 
         local_node2idx = {}
         comment_ids = group["id"].to_list()
-        parent_ids = group["parent_id"].unique().tolist()
+        parent_ids = []  # group["parent_id"].unique().tolist()
         node_list = np.unique(comment_ids + parent_ids).tolist()
 
         for i, c_id in enumerate(node_list):
@@ -295,14 +383,11 @@ def train_model(
 ) -> RecurrentGCN:
     train_masks = train_dataset.masks
 
-    model = RecurrentGCN(node_features=node_features, hidden_dim=128).to(DEVICE)
+    model = RecurrentGCN(node_features=node_features).to(DEVICE)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-4)
-    criterion = nn.BCEWithLogitsLoss()
+    criterion = FocalLoss()
 
     # Training
-    best_epoch = 0
-    min_loss = float("inf")
-
     for epoch in range(epochs):
         model.train()
         epoch_loss = 0.0
@@ -322,7 +407,12 @@ def train_model(
             )
 
             num_masked = train_mask.sum().item()
-            normalized_loss = loss / num_masked
+            logger.debug(
+                "Cutting TRAIN loss by a factor of %s in %s observations.",
+                num_masked,
+                len(train_snapshot.y),
+            )
+            normalized_loss = loss  # / num_masked
 
             normalized_loss.backward()
 
@@ -337,17 +427,8 @@ def train_model(
 
             epoch_loss += normalized_loss.item()
 
-            if epoch_loss < min_loss:
-                min_loss = epoch_loss
-                best_epoch = epoch + 1
-
         logger.info("Epoch %03d | Loss: %.4f", epoch + 1, epoch_loss)
 
-    logger.info(
-        "Best Epoch %d, Train Loss: %.4f",
-        best_epoch,
-        min_loss / train_dataset.snapshot_count,
-    )
     return model
 
 
@@ -355,14 +436,14 @@ def evaluate_model(model: RecurrentGCN, test_dataset: DynamicGraphTemporalSignal
     test_masks = test_dataset.masks
     # Evaluation
     model.eval()
-    criterion = nn.BCEWithLogitsLoss()
-    test_loss = 0.0
+    criterion = FocalLoss()
 
     all_preds = []
     all_labels = []
 
     with torch.no_grad():
         for idx, test_snapshot in enumerate(test_dataset):
+            test_loss = 0.0
             test_snapshot = test_snapshot.to(DEVICE)
             test_snapshot.x = nn.functional.normalize(test_snapshot.x, dim=-1)
             test_mask = torch.tensor(test_masks[idx], dtype=torch.bool, device=DEVICE)
@@ -376,7 +457,12 @@ def evaluate_model(model: RecurrentGCN, test_dataset: DynamicGraphTemporalSignal
             )
             # Normalize by number of masked nodes
             num_masked = test_mask.sum().item()
-            normalized_loss = loss / num_masked
+            logger.debug(
+                "Cutting TEST loss by a factor of %s in %s observations.",
+                num_masked,
+                len(test_snapshot.y),
+            )
+            normalized_loss = loss  # / num_masked
 
             test_loss += normalized_loss.item()
 
@@ -394,9 +480,6 @@ def evaluate_model(model: RecurrentGCN, test_dataset: DynamicGraphTemporalSignal
                 probs.max().item(),
             )
 
-        # Compute average test loss
-        test_loss /= test_dataset.snapshot_count
-
     # Concatenate predictions for saving
     all_preds = torch.cat(all_preds)
     all_labels = torch.cat(all_labels)
@@ -404,7 +487,6 @@ def evaluate_model(model: RecurrentGCN, test_dataset: DynamicGraphTemporalSignal
     # Example: save predictions
     save_predictions_to_csv(all_preds, all_labels)
 
-    logger.info("Test Loss: %.4f", test_loss)
     logger.info(
         "Pred Range (All): [%.3f, %.3f], Mean: %.3f",
         all_preds.min().item(),
@@ -542,7 +624,7 @@ def run():
     df_combined = pd.concat([df_train, df_test], ignore_index=True)
     author2idx, subreddit2idx, num_subreddits = build_node_mappings(df_combined)
 
-    df_train = balance_score_bins(df_train)
+    # df_train = balance_score_bins(df_train)
 
     # print(df_train["toxicity_probability_self"].describe())
     # plt.hist(
@@ -557,12 +639,16 @@ def run():
     # return
 
     # Create datasets
+    logger.info("** Begin loading: %s", train_csv_path)
     train_dataset, train_time_vs_count = create_dataset(
         df_train, author2idx, subreddit2idx, num_subreddits
     )
+    logger.info("** Finished loading: %s", train_csv_path)
+    logger.info("** Begin loading: %s", test_csv_path)
     test_dataset, test_time_vs_count = create_dataset(
         df_test, author2idx, subreddit2idx, num_subreddits
     )
+    logger.info("** Finished loading: %s", test_csv_path)
 
     if PLOT_TIME_GRAPH:
         plot_time_vs_count(train_time_vs_count, step=24)
@@ -572,7 +658,7 @@ def run():
     trained_model = train_model(
         train_dataset,
         node_features=train_dataset.features[0].shape[1],
-        epochs=5,
+        epochs=25,
     )
     evaluate_model(trained_model, test_dataset)
 
