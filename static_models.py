@@ -1,6 +1,7 @@
+import torch
 from torch import nn
 from torch_geometric.nn import GCNConv
-import torch
+
 
 class StaticGCN(nn.Module):
     def __init__(

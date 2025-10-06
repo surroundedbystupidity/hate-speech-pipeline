@@ -17,10 +17,19 @@ Expected dataframe columns (at minimum):
 plus any columns referenced by USER_FEATURE_NAMES and COMMENT_FEATURE_NAMES.
 """
 
-from __future__ import annotations
+import logging
 from typing import Dict, List, Tuple
+
 import numpy as np
 import pandas as pd
+
+logging.basicConfig(
+    level="INFO",
+    format="%(asctime)s %(levelname)s %(module)s(%(lineno)d): %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
 
 def build_temporal_graph_local_diffusion(
     df: pd.DataFrame,
@@ -30,7 +39,14 @@ def build_temporal_graph_local_diffusion(
     comment_feature_names: List[str],
     user_feature_names: List[str],
     tox_thresh: float = 0.5,
-) -> Tuple[List[np.ndarray], List[np.ndarray], List[np.ndarray], List[np.ndarray], Dict[str, int], List[np.ndarray]]:
+) -> Tuple[
+    List[np.ndarray],
+    List[np.ndarray],
+    List[np.ndarray],
+    List[np.ndarray],
+    Dict[str, int],
+    List[np.ndarray],
+]:
     """
     Build DynamicGraphTemporalSignal inputs where labels represent **local diffusion**
     into the next window (t -> t+1).
@@ -62,7 +78,9 @@ def build_temporal_graph_local_diffusion(
         df["timestamp"] = pd.to_datetime(df["created_utc"], unit="s", errors="coerce")
 
     if "time_bin" not in df.columns:
-        raise ValueError("Missing 'time_bin'. Ensure you've windowed timestamps before calling this.")
+        raise ValueError(
+            "Missing 'time_bin'. Ensure you've windowed timestamps before calling this."
+        )
 
     # Sort to ensure temporal order inside bins is stable
     df = df.sort_values(["time_bin", "timestamp", "id"])
@@ -100,7 +118,12 @@ def build_temporal_graph_local_diffusion(
     # --- Build per-bin snapshots ---
     for tbin, group in df.groupby("time_bin"):
         tbin_next = next_bin(tbin)
-        print(f"Processing bin {tbin} with {len(group)} comments; next bin: {tbin_next}")
+        logger.debug(
+            "Processing bin %s with %s comments; next bin: %s",
+            tbin,
+            len(group),
+            tbin_next,
+        )
         time_vs_count[str(tbin)] = len(group)
 
         # Nodes in this snapshot: comments posted in t
@@ -177,16 +200,23 @@ def build_temporal_graph_local_diffusion(
 
             # ---- Label: any toxic child in t+1? ----
             if tbin_next is not None:
-                tox_list_next = children_by_parent_by_bin.get(cid, {}).get(tbin_next, [])
+                tox_list_next = children_by_parent_by_bin.get(cid, {}).get(
+                    tbin_next, []
+                )
                 if len(tox_list_next) == 0:
                     y[idx_local, 0] = 0.0
-                    print(f"Comment {cid} has no children in next bin.")
+                    logger.debug("Comment %s has no children in next bin.", cid)
                 else:
                     y[idx_local, 0] = float(any(t > tox_thresh for t in tox_list_next))
-                    print(f"Comment {cid} has {len(tox_list_next)} children in next bin; label = {y[idx_local, 0]}")
+                    logger.debug(
+                        "Comment %s has %d children in next bin; label = %.3f",
+                        cid,
+                        len(tox_list_next),
+                        y[idx_local, 0],
+                    )
                 mask[idx_local] = True  # valid label only when t+1 exists
             else:
-                print(f"Comment {cid} has no next bin; no label assigned.")
+                logger.debug("Comment %s has no next bin; no label assigned.", cid)
                 mask[idx_local] = False  # last bin has no label
 
         # ----- Edges within t (child -> parent if both in node_list) -----
@@ -201,7 +231,9 @@ def build_temporal_graph_local_diffusion(
             if pd.notna(p):
                 pkey = f"comment_{str(p)}"
                 if pkey in local_node2idx:
-                    edges.append([local_node2idx[f"comment_{cid}"], local_node2idx[pkey]])
+                    edges.append(
+                        [local_node2idx[f"comment_{cid}"], local_node2idx[pkey]]
+                    )
                     edge_weights.append(1.0)
 
         if len(edges) == 0:
@@ -217,6 +249,11 @@ def build_temporal_graph_local_diffusion(
         labels_list.append(y)
         masks_list.append(mask)
 
+    logger.info(
+        "%s nodes and %s edges built.",
+        len(edge_index_list),
+        sum(len(e) for e in edge_index_list),
+    )
     return (
         edge_index_list,
         edge_weight_list,
@@ -226,8 +263,9 @@ def build_temporal_graph_local_diffusion(
         masks_list,
     )
 
+
 def load_and_prepare_data(csv_path, window_size_hours):
-    df = pd.read_csv(csv_path).head(5000)
+    df = pd.read_csv(csv_path).head(1000)
 
     # Drop NAs and filter subreddit without regex overhead (regex is slower)
     mask_valid = df["subreddit"].notna() & ~df["subreddit"].str.contains(" ")
@@ -240,17 +278,16 @@ def load_and_prepare_data(csv_path, window_size_hours):
     # Precompute time bins once
     df["time_bin"] = df["timestamp"].dt.floor(f"{window_size_hours}h")
 
-    
     trans = str.maketrans({"[": "", "]": "", "\n": " "})
     cleaned = (
-            df["body_emb"]
-            .astype(str)
-            .str.translate(trans)
-            .str.replace(r"\s+", " ", regex=True)
-            .str.strip()
-        )
+        df["body_emb"]
+        .astype(str)
+        .str.translate(trans)
+        .str.replace(r"\s+", " ", regex=True)
+        .str.strip()
+    )
 
-        # Convert embeddings string to vector.
+    # Convert embeddings string to vector.
     empty = np.array([], dtype=np.float32)
     df["body_emb"] = cleaned.map(
         lambda s: np.fromstring(s, dtype=np.float32, sep=" ") if s else empty

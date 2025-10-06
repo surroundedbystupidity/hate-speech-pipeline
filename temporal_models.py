@@ -1,7 +1,6 @@
 import torch
 from torch import nn
-from torch_geometric_temporal.nn import DCRNN, A3TGCN
-import torch.nn.functional as F
+from torch_geometric_temporal.nn import A3TGCN, DCRNN
 
 
 # TODO: Implement a superclass for common functionality, here and for static_models.py.

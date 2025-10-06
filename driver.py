@@ -1,14 +1,25 @@
-from builder_v2 import (
-    load_and_prepare_data,
-    build_node_mappings,
-    build_temporal_graph_local_diffusion,
-)
+import logging
+
+import numpy as np
 import pandas as pd
 import torch
-from tqdm import tqdm
+from sklearn.metrics import accuracy_score, mean_squared_error
 from torch_geometric_temporal.signal import DynamicGraphTemporalSignal
+from tqdm import tqdm
 
+from builder_v2 import (
+    build_node_mappings,
+    build_temporal_graph_local_diffusion,
+    load_and_prepare_data,
+)
 from temporal_models import BasicRecurrentGCN
+
+logging.basicConfig(
+    level="INFO",
+    format="%(asctime)s %(levelname)s %(module)s(%(lineno)d): %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 COMMENT_FEATURE_NAMES: list[str] = [
     "toxicity_probability_self",
@@ -37,65 +48,151 @@ USER_FEATURE_NAMES: list[str] = [
     "user_hate_ratio_ord",
 ]
 WINDOW_SIZE_HOURS = 1
-DEVICE = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+DEVICE = (
+    "cuda"
+    if torch.cuda.is_available()
+    else "mps" if torch.backends.mps.is_available() else "cpu"
+)
 
-def get_graph(author2idx, subreddit2idx, num_subreddits, df) -> DynamicGraphTemporalSignal:
-    train_edge_indices, train_edge_weights, train_features, train_labels, train_time_vs_count, train_masks = build_temporal_graph_local_diffusion(
+
+def save_predictions_to_csv(all_preds, all_labels, output_path="test_predictions.csv"):
+    df_out = pd.DataFrame(
+        {
+            "node_index": np.arange(len(all_preds)),
+            "prediction": all_preds,
+            "ground_truth": all_labels,
+        }
+    )
+    df_out["residual"] = df_out["ground_truth"] - df_out["prediction"]
+    df_out["abs_residual"] = df_out["residual"].abs()
+    mse = mean_squared_error(df_out["ground_truth"], df_out["prediction"])
+    accuracy = accuracy_score(df_out["ground_truth"], df_out["prediction"])
+    logger.info("MSE = %.4f", mse)
+    logger.info("Accuracy = %.4f", accuracy)
+    df_out.to_csv(output_path, index=False)
+    logger.info("Saved test predictions to %s", output_path)
+
+
+def get_graph(
+    author2idx, subreddit2idx, num_subreddits, df
+) -> DynamicGraphTemporalSignal:
+    (
+        train_edge_indices,
+        train_edge_weights,
+        train_features,
+        train_labels,
+        train_time_vs_count,
+        train_masks,
+    ) = build_temporal_graph_local_diffusion(
         df=df,
         author2idx=author2idx,
         subreddit2idx=subreddit2idx,
         num_subreddits=num_subreddits,
         comment_feature_names=COMMENT_FEATURE_NAMES,
         user_feature_names=USER_FEATURE_NAMES,
-        tox_thresh=0.5
+        tox_thresh=0.5,
     )
-    print("Built training graph with %d snapshots." % len(train_edge_indices))
+    logger.info("Built graph with %d snapshots.", len(train_edge_indices))
     return DynamicGraphTemporalSignal(
-        edge_indices = train_edge_indices,
-        edge_weights = train_edge_weights,
-        features = train_features,
-        targets = train_labels,
-        masks = train_masks
+        edge_indices=train_edge_indices,
+        edge_weights=train_edge_weights,
+        features=train_features,
+        targets=train_labels,
+        masks=train_masks,
     )
+
 
 # TODO: Bring plot_time_vs_count here.
 
+
 def train_model(train_dataset: DynamicGraphTemporalSignal, epochs=10):
     model = BasicRecurrentGCN(
-        node_features=train_dataset.num_features,
+        node_features=train_dataset.features[0][0].shape[0],
         hidden_dim=128,
         dropout=0.1,
-        num_heads=8
+        num_heads=8,
     ).to(DEVICE)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-    criterion = torch.nn.BCEWithLogitsLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
+    num_pos = (train_snapshot.y == 1).sum()
+    num_neg = (train_snapshot.y == 0).sum()
+    logger.info(
+        "Number of positive samples: %d, Number of negative samples: %d",
+        num_pos,
+        num_neg,
+    )
+    pos_weight = torch.tensor([num_neg / num_pos], device=DEVICE)
+
+    criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     for epoch in tqdm(range(epochs)):
         epoch_loss = 0
         for train_snapshot in train_dataset:
             model.train()
             optimizer.zero_grad()
-            output = model(train_snapshot.x.to(DEVICE), train_snapshot.edge_index.to(DEVICE))
+            output = model(
+                train_snapshot.x.to(DEVICE), train_snapshot.edge_index.to(DEVICE)
+            )
             loss = criterion(output.view(-1), train_snapshot.y.to(DEVICE).view(-1))
             loss.backward()
             optimizer.step()
             epoch_loss += loss.item()
 
-        print(f"Epoch {epoch}, Average Epoch Loss: {epoch_loss / train_dataset.snapshot_count}")
+        logger.info(
+            "Epoch %d, Average Epoch Loss: %.6f",
+            epoch,
+            epoch_loss / train_dataset.snapshot_count,
+        )
     return model, criterion
 
+
 def evaluate_model(model, test_dataset: DynamicGraphTemporalSignal, criterion):
+    test_masks = test_dataset.masks
+    all_preds = []
+    all_labels = []
     model.eval()
-    # TODO: Factor in masks.
+    test_loss = 0
     with torch.no_grad():
-        for snapshot in tqdm(test_dataset):
-            output = model(snapshot)
-            loss = criterion(output, snapshot.targets)
-            print(f"Test Loss: {loss.item()}")
+        for idx, snapshot in enumerate(test_dataset):
+            test_mask = torch.tensor(test_masks[idx], dtype=torch.bool, device=DEVICE)
+            y_hat = model(snapshot.x.to(DEVICE), snapshot.edge_index.to(DEVICE))
+            loss = criterion(
+                y_hat[test_mask].view(-1), snapshot.y.to(DEVICE)[test_mask].view(-1)
+            )
+
+            logger.debug("Test Loss: %s", loss.item())
+            test_loss += loss.item()
+
+            probs = torch.sigmoid(y_hat).view(-1).cpu()
+            binary_preds = (probs > 0.5).int()
+
+            all_preds.append(binary_preds)
+
+            all_labels.append(snapshot.y.cpu())
+
+            logger.debug(
+                "Snapshot Loss = %.4f | Prob Range: [%.3f, %.3f] | Preds (0/1) Mean: %.3f",
+                loss.item(),
+                probs.min().item(),
+                probs.max().item(),
+                binary_preds.float().mean().item(),
+            )
+
+    all_preds = torch.cat(all_preds).numpy().flatten()
+    all_labels = torch.cat(all_labels).numpy().flatten()
+
+    save_predictions_to_csv(all_preds, all_labels)
+
+    logger.info(
+        "Pred Range (All): [%.3f, %.3f], Mean: %.3f",
+        all_preds.min().item(),
+        all_preds.max().item(),
+        all_preds.mean().item(),
+    )
+
 
 def run():
     train_file_path = "val_dataset_with_emb.csv"
-    test_file_path = "test_dataset_with_emb_sm.csv"
-    print("Preparing windows for %s hours.", WINDOW_SIZE_HOURS)
+    test_file_path = "test_dataset_with_emb.csv"
+    logger.info("Preparing windows for %s hours.", WINDOW_SIZE_HOURS)
     df_train = load_and_prepare_data(train_file_path, WINDOW_SIZE_HOURS)
     df_test = load_and_prepare_data(test_file_path, WINDOW_SIZE_HOURS)
 
@@ -106,7 +203,8 @@ def run():
     train_dataset = get_graph(author2idx, subreddit2idx, num_subreddits, df_train)
     test_dataset = get_graph(author2idx, subreddit2idx, num_subreddits, df_test)
 
-    model = train_model(train_dataset)
-    evaluate_model(model, test_dataset)
+    model, criterion = train_model(train_dataset)
+    evaluate_model(model, test_dataset, criterion)
+
 
 run()
