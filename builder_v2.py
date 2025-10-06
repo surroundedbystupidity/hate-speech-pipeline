@@ -265,7 +265,7 @@ def build_temporal_graph_local_diffusion(
 
 
 def load_and_prepare_data(csv_path, window_size_hours):
-    df = pd.read_csv(csv_path).head(1000)
+    df = pd.read_csv(csv_path).head(5000)
 
     # Drop NAs and filter subreddit without regex overhead (regex is slower)
     mask_valid = df["subreddit"].notna() & ~df["subreddit"].str.contains(" ")

@@ -113,14 +113,15 @@ def train_model(train_dataset: DynamicGraphTemporalSignal, epochs=10):
         num_heads=8,
     ).to(DEVICE)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
-    num_pos = (train_snapshot.y == 1).sum()
-    num_neg = (train_snapshot.y == 0).sum()
+    flat_targets = np.concatenate(train_dataset.targets).ravel()
+    num_pos = np.sum(flat_targets == 1)
+    num_neg = np.sum(flat_targets == 0)
     logger.info(
         "Number of positive samples: %d, Number of negative samples: %d",
         num_pos,
         num_neg,
     )
-    pos_weight = torch.tensor([num_neg / num_pos], device=DEVICE)
+    pos_weight = torch.tensor([num_neg / num_pos], device=DEVICE, dtype=torch.float32)
 
     criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     for epoch in tqdm(range(epochs)):
@@ -162,7 +163,13 @@ def evaluate_model(model, test_dataset: DynamicGraphTemporalSignal, criterion):
             test_loss += loss.item()
 
             probs = torch.sigmoid(y_hat).view(-1).cpu()
-            binary_preds = (probs > 0.5).int()
+            logger.info(
+                "Prob Range: [%.3f, %.3f], Mean: %.3f",
+                probs.min(),
+                probs.max(),
+                probs.mean(),
+            )
+            binary_preds = (probs > 0.41).int()
 
             all_preds.append(binary_preds)
 
