@@ -72,6 +72,9 @@ class GCN(nn.Module):
         self.readout = nn.Linear(hidden_dim // 2, output_dimension)
         self.relu = nn.ReLU()
 
+        # Attention layer parameters
+        self.attn_fc = nn.Linear(hidden_dim // 2, 1)
+
     def forward(self, x, edge_index):
         # Layer 1
         x = self.conv1(x, edge_index)
@@ -91,10 +94,14 @@ class GCN(nn.Module):
         x = self.relu(x)
         x = self.dropout(x)
 
+        # Attention mechanism (global node attention)
+        attn_weights = torch.softmax(self.attn_fc(x), dim=0)  # (N, 1)
+        x_attn = torch.sum(attn_weights * x, dim=0, keepdim=True)  # (1, F)
+
         # Output with sigmoid for 0-1 range
-        x = self.readout(x)
+        x = self.readout(x_attn)
         x = torch.sigmoid(x)
-        return x
+        return x.squeeze(0)
 
 
 def generate_comment_embeddings(
@@ -358,20 +365,8 @@ logger.info("=" * 50)
 
 # Show some sample predictions
 logger.info("\nSample Predictions vs Ground Truth:")
-for i in range(min(10, len(predictions))):
-    logger.info(f"Pred: {predictions[i]:.4f}, True: {ground_truth[i]:.4f}")
 
-    # Save all predictions and ground truths to CSV
-    results_df = pd.DataFrame(
-        {
-            "prediction": predictions,
-            "ground_truth": ground_truth,
-            "absolute_error": np.abs(predictions - ground_truth),
-        }
-    )
-    results_df.to_csv("gcn_predictions.csv", index=False)
-    logger.info("\nPredictions saved to 'gcn_predictions.csv'")
-
+logger.info()
 # Save predictions
 results_df = pd.DataFrame(
     {
@@ -383,4 +378,4 @@ results_df = pd.DataFrame(
 results_df.to_csv("gcn_predictions.csv", index=False)
 logger.info("\nPredictions saved to 'gcn_predictions.csv'")
 
-plot_results()
+# plot_results()
