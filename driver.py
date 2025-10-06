@@ -3,7 +3,14 @@ import logging
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.metrics import accuracy_score, mean_squared_error
+from sklearn.metrics import (
+    accuracy_score,
+    confusion_matrix,
+    f1_score,
+    mean_squared_error,
+    precision_score,
+    recall_score,
+)
 from torch_geometric_temporal.signal import DynamicGraphTemporalSignal
 from tqdm import tqdm
 
@@ -55,7 +62,9 @@ DEVICE = (
 )
 
 
-def save_predictions_to_csv(all_preds, all_labels, output_path="test_predictions.csv"):
+def save_predictions_and_print_metrics(
+    all_preds, all_labels, output_path="test_predictions.csv"
+):
     df_out = pd.DataFrame(
         {
             "node_index": np.arange(len(all_preds)),
@@ -67,8 +76,18 @@ def save_predictions_to_csv(all_preds, all_labels, output_path="test_predictions
     df_out["abs_residual"] = df_out["residual"].abs()
     mse = mean_squared_error(df_out["ground_truth"], df_out["prediction"])
     accuracy = accuracy_score(df_out["ground_truth"], df_out["prediction"])
+    precision = precision_score(df_out["ground_truth"], df_out["prediction"])
+    f1 = f1_score(df_out["ground_truth"], df_out["prediction"])
+    recall = recall_score(df_out["ground_truth"], df_out["prediction"])
+    cm = confusion_matrix(df_out["ground_truth"], df_out["prediction"])
+    logger.info("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
     logger.info("MSE = %.4f", mse)
     logger.info("Accuracy = %.4f", accuracy)
+    logger.info("Precision = %.4f", precision)
+    logger.info("F1 Score = %.4f", f1)
+    logger.info("Recall = %.4f", recall)
+    logger.info("Confusion Matrix:\n%s", cm)
+    logger.info("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
     df_out.to_csv(output_path, index=False)
     logger.info("Saved test predictions to %s", output_path)
 
@@ -102,9 +121,6 @@ def get_graph(
     )
 
 
-# TODO: Bring plot_time_vs_count here.
-
-
 def train_model(train_dataset: DynamicGraphTemporalSignal, epochs=10):
     model = BasicRecurrentGCN(
         node_features=train_dataset.features[0][0].shape[0],
@@ -124,7 +140,7 @@ def train_model(train_dataset: DynamicGraphTemporalSignal, epochs=10):
     pos_weight = torch.tensor([num_neg / num_pos], device=DEVICE, dtype=torch.float32)
 
     criterion = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    for epoch in tqdm(range(epochs)):
+    for epoch in tqdm(range(epochs), desc="Training Epochs"):
         epoch_loss = 0
         for train_snapshot in train_dataset:
             model.train()
@@ -137,7 +153,7 @@ def train_model(train_dataset: DynamicGraphTemporalSignal, epochs=10):
             optimizer.step()
             epoch_loss += loss.item()
 
-        logger.info(
+        logger.debug(
             "Epoch %d, Average Epoch Loss: %.6f",
             epoch,
             epoch_loss / train_dataset.snapshot_count,
@@ -145,48 +161,52 @@ def train_model(train_dataset: DynamicGraphTemporalSignal, epochs=10):
     return model, criterion
 
 
-def evaluate_model(model, test_dataset: DynamicGraphTemporalSignal, criterion):
+def evaluate_model(
+    model, test_dataset: DynamicGraphTemporalSignal, criterion, threshold=0.2
+):
     test_masks = test_dataset.masks
     all_preds = []
     all_labels = []
     model.eval()
-    test_loss = 0
+    total_samples = 0
+    probs_min = float("inf")
+    probs_max = float("-inf")
+    total_loss = 0
+    total_samples = 0
+
     with torch.no_grad():
-        for idx, snapshot in enumerate(test_dataset):
+        for idx, snapshot in tqdm(
+            enumerate(test_dataset),
+            desc=f"Testing Snapshots at threshold {threshold}",
+        ):
             test_mask = torch.tensor(test_masks[idx], dtype=torch.bool, device=DEVICE)
-            y_hat = model(snapshot.x.to(DEVICE), snapshot.edge_index.to(DEVICE))
-            loss = criterion(
-                y_hat[test_mask].view(-1), snapshot.y.to(DEVICE)[test_mask].view(-1)
-            )
+            if test_mask.sum() == 0:
+                continue
 
-            logger.debug("Test Loss: %s", loss.item())
-            test_loss += loss.item()
+            logits = model(snapshot.x.to(DEVICE), snapshot.edge_index.to(DEVICE))
+            masked_logits = logits[test_mask].view(-1)
+            masked_labels = snapshot.y.to(DEVICE)[test_mask].view(-1)
 
-            probs = torch.sigmoid(y_hat).view(-1).cpu()
-            logger.info(
-                "Prob Range: [%.3f, %.3f], Mean: %.3f",
-                probs.min(),
-                probs.max(),
-                probs.mean(),
-            )
-            binary_preds = (probs > 0.41).int()
+            loss = criterion(masked_logits, masked_labels)
+            total_loss += loss.item() * masked_labels.numel()
+            total_samples += masked_labels.numel()
 
-            all_preds.append(binary_preds)
+            probs = torch.sigmoid(masked_logits).cpu()
+            all_labels.append(masked_labels.cpu())
+            all_preds.append((probs > threshold).int())  # threshold tuned elsewhere
 
-            all_labels.append(snapshot.y.cpu())
+    avg_loss = total_loss / total_samples if total_samples > 0 else float("nan")
 
-            logger.debug(
-                "Snapshot Loss = %.4f | Prob Range: [%.3f, %.3f] | Preds (0/1) Mean: %.3f",
-                loss.item(),
-                probs.min().item(),
-                probs.max().item(),
-                binary_preds.float().mean().item(),
-            )
-
+    logger.info(
+        "Average testing Loss = %.4f | prediction probability range: [%.3f, %.3f]",
+        avg_loss,
+        probs_min,
+        probs_max,
+    )
     all_preds = torch.cat(all_preds).numpy().flatten()
     all_labels = torch.cat(all_labels).numpy().flatten()
 
-    save_predictions_to_csv(all_preds, all_labels)
+    save_predictions_and_print_metrics(all_preds, all_labels)
 
     logger.info(
         "Pred Range (All): [%.3f, %.3f], Mean: %.3f",
@@ -201,8 +221,9 @@ def run():
     test_file_path = "test_dataset_with_emb.csv"
     logger.info("Preparing windows for %s hours.", WINDOW_SIZE_HOURS)
     df_train = load_and_prepare_data(train_file_path, WINDOW_SIZE_HOURS)
+    logger.info("Loaded training data with %d rows.", len(df_train))
     df_test = load_and_prepare_data(test_file_path, WINDOW_SIZE_HOURS)
-
+    logger.info("Loaded test data with %d rows.", len(df_test))
     # Build node mappings from combined data to ensure consistency
     df_combined = pd.concat([df_train, df_test], ignore_index=True)
     author2idx, subreddit2idx, num_subreddits = build_node_mappings(df_combined)
@@ -211,7 +232,8 @@ def run():
     test_dataset = get_graph(author2idx, subreddit2idx, num_subreddits, df_test)
 
     model, criterion = train_model(train_dataset)
-    evaluate_model(model, test_dataset, criterion)
+    for i in range(6):
+        evaluate_model(model, test_dataset, criterion, threshold=0.2 + i * 0.05)
 
 
 run()
