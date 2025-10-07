@@ -63,7 +63,7 @@ DEVICE = (
 
 
 def save_predictions_and_print_metrics(
-    all_preds, all_labels, output_path="test_predictions.csv"
+    all_preds, all_labels, df_results, threshold, run_validation=False
 ):
     df_out = pd.DataFrame(
         {
@@ -80,16 +80,30 @@ def save_predictions_and_print_metrics(
     f1 = f1_score(df_out["ground_truth"], df_out["prediction"])
     recall = recall_score(df_out["ground_truth"], df_out["prediction"])
     cm = confusion_matrix(df_out["ground_truth"], df_out["prediction"])
-    logger.info("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
-    logger.info("MSE = %.4f", mse)
-    logger.info("Accuracy = %.4f", accuracy)
-    logger.info("Precision = %.4f", precision)
-    logger.info("F1 Score = %.4f", f1)
-    logger.info("Recall = %.4f", recall)
-    logger.info("Confusion Matrix:\n%s", cm)
-    logger.info("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
-    df_out.to_csv(output_path, index=False)
-    logger.info("Saved test predictions to %s", output_path)
+    labels = ["Has not propagated hate (0)", "Has propagated hate (1)"]
+    cm_df = pd.DataFrame(cm, index=labels, columns=labels)
+    markdown_table = cm_df.to_markdown()
+    if df_results is not None:
+        df_results.loc[len(df_results)] = {
+            "threshold": threshold,
+            "mse": mse,
+            "accuracy": accuracy,
+            "precision": precision,
+            "f1": f1,
+            "recall": recall,
+        }
+
+    logger.debug("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+    logger.debug("MSE = %.4f", mse)
+    logger.debug("Accuracy = %.4f", accuracy)
+    logger.debug("Precision = %.4f", precision)
+    logger.debug("F1 Score = %.4f", f1)
+    logger.debug("Recall = %.4f", recall)
+    if not run_validation:
+        logger.info("Confusion Matrix:\n%s", markdown_table)
+    logger.debug("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+    # df_out.to_csv(output_path, index=False)
+    # logger.info("Saved test predictions to %s", output_path)
 
 
 def get_graph(
@@ -121,14 +135,21 @@ def get_graph(
     )
 
 
-def train_model(train_dataset: DynamicGraphTemporalSignal, epochs=10):
+def train_model(
+    train_dataset: DynamicGraphTemporalSignal,
+    epochs=10,
+    hidden_dim=128,
+    dropout=0.1,
+    num_heads=8,
+    learning_rate=0.0001,
+):
     model = BasicRecurrentGCN(
         node_features=train_dataset.features[0][0].shape[0],
-        hidden_dim=128,
-        dropout=0.1,
-        num_heads=8,
+        hidden_dim=hidden_dim,
+        dropout=dropout,
+        num_heads=num_heads,
     ).to(DEVICE)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     flat_targets = np.concatenate(train_dataset.targets).ravel()
     num_pos = np.sum(flat_targets == 1)
     num_neg = np.sum(flat_targets == 0)
@@ -162,7 +183,12 @@ def train_model(train_dataset: DynamicGraphTemporalSignal, epochs=10):
 
 
 def evaluate_model(
-    model, test_dataset: DynamicGraphTemporalSignal, criterion, threshold=0.2
+    model,
+    test_dataset: DynamicGraphTemporalSignal,
+    criterion,
+    threshold=0.2,
+    df_results: pd.DataFrame | None = None,
+    run_validation=False,
 ):
     test_masks = test_dataset.masks
     all_preds = []
@@ -208,7 +234,9 @@ def evaluate_model(
     all_preds = torch.cat(all_preds).numpy().flatten()
     all_labels = torch.cat(all_labels).numpy().flatten()
 
-    save_predictions_and_print_metrics(all_preds, all_labels)
+    save_predictions_and_print_metrics(
+        all_preds, all_labels, df_results, threshold, run_validation=run_validation
+    )
     logger.info(
         "Prediction Probability Range (Min-Max): [%.3f, %.3f]", prob_min, prob_max
     )
@@ -222,10 +250,12 @@ def evaluate_model(
 
 def run(
     generate_embeddings=False,
-    train_file_path="val_dataset_with_emb.csv",
+    train_file_path="train_dataset_with_emb.csv",
+    val_file_path="val_dataset_with_emb.csv",
     test_file_path="test_dataset_with_emb.csv",
     subset_count=0,
     window_size_hours=WINDOW_SIZE_HOURS,
+    epochs=10,
 ):
     logger.info("Preparing windows for %s hours.", window_size_hours)
     df_train = load_and_prepare_data(
@@ -235,20 +265,58 @@ def run(
         subset_count=subset_count,
     )
     logger.info("Loaded training data with %d rows.", len(df_train))
+
     df_test = load_and_prepare_data(
         test_file_path,
         window_size_hours,
         generate_embeddings=generate_embeddings,
         subset_count=subset_count,
     )
-    logger.info("Loaded test data with %d rows.", len(df_test))
-    df_combined = pd.concat([df_train, df_test], ignore_index=True)
+    logger.info("Loaded testing data with %d rows.", len(df_test))
+
+    df_val = load_and_prepare_data(
+        val_file_path,
+        window_size_hours,
+        generate_embeddings=generate_embeddings,
+        subset_count=subset_count,
+    )
+    logger.info("Loaded validation data with %d rows.", len(df_val))
+
+    df_combined = pd.concat([df_train, df_test, df_val], ignore_index=True)
     author2idx, subreddit2idx, num_subreddits = build_node_mappings(df_combined)
 
-    test_dataset = get_graph(author2idx, subreddit2idx, num_subreddits, df_test)
     train_dataset = get_graph(author2idx, subreddit2idx, num_subreddits, df_train)
+    val_dataset = get_graph(author2idx, subreddit2idx, num_subreddits, df_val)
+    test_dataset = get_graph(author2idx, subreddit2idx, num_subreddits, df_test)
+    df_val = pd.DataFrame(
+        columns=["threshold", "mse", "accuracy", "precision", "recall", "f1_score"]
+    )
+    df_results = df_val.copy()
+    dcrnn_model, criterion = train_model(train_dataset, epochs=epochs)
 
-    dcrnn_model, criterion = train_model(train_dataset)
+    for threshold_candidate in range(24, 40, 4):
+        evaluate_model(
+            dcrnn_model,
+            val_dataset,
+            criterion,
+            threshold=threshold_candidate / 100,
+            df_results=df_val,
+            run_validation=True,
+        )
 
-    for i in range(6):
-        evaluate_model(dcrnn_model, test_dataset, criterion, threshold=0.2 + i * 0.05)
+    logger.info("Validation evaluations completed. Results:\n%s", df_val.to_markdown())
+    best_threshold = (
+        df_val[abs(df_val["accuracy"] - df_val["recall"]) <= 0.5]
+        .sort_values("recall", ascending=False)
+        .head(1)["threshold"]
+        .values[0]
+    )
+    logger.info("Best threshold selected: %.2f", best_threshold)
+    evaluate_model(
+        dcrnn_model,
+        test_dataset,
+        criterion,
+        threshold=best_threshold,
+        df_results=df_results,
+    )
+    logger.info("Completed all evaluations. Results:\n%s", df_results.to_markdown())

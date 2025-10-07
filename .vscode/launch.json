@@ -10,6 +10,41 @@
       "request": "launch",
       "program": "${file}",
       "console": "integratedTerminal"
+    },
+    {
+      "name": "Driver - Generate Embeddings",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "/Users/sujay/Documents/Workspace/hate-speech-pipeline/main.py",
+      "console": "integratedTerminal",
+      "args": [
+        "--train-file-path",
+        "retrain_train80.csv",
+        "--test-file-path",
+        "retrain_test10.csv",
+        "--val-file-path",
+        "retrain_validation10.csv",
+        "--subset-count",
+        "10000",
+        "--generate-embeddings"
+      ]
+    },
+    {
+      "name": "Driver - No Embeddings",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "/Users/sujay/Documents/Workspace/hate-speech-pipeline/main.py",
+      "console": "integratedTerminal",
+      "args": [
+        "--train-file-path",
+        "retrain_train80_with_embeddings.csv",
+        "--test-file-path",
+        "retrain_test10_with_embeddings.csv",
+        "--val-file-path",
+        "retrain_validation10_with_embeddings.csv",
+        "--epochs",
+        "20"
+      ]
     }
   ]
 }
