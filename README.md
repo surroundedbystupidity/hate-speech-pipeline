@@ -6,7 +6,6 @@
 
 | Argument              | Type   | Default                   | Description                                           |
 | --------------------- | ------ | ------------------------- | ----------------------------------------------------- |
-| --evaluate-only       | flag   | False                     | Only run evaluation.                                  |
 | --generate-embeddings | flag   | False                     | Don't assume embeddings are available, generate them. |
 | --train-file-path     | string | val_dataset_with_emb.csv  | Path to the training CSV file.                        |
 | --test-file-path      | string | test_dataset_with_emb.csv | Path to the test CSV file.                            |
