@@ -60,3 +60,7 @@ def main():
         subset_count=args.subset_count,
         window_size_hours=args.window_size_hours,
     )
+
+
+if __name__ == "__main__":
+    main()

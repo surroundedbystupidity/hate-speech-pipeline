@@ -3,11 +3,6 @@ import logging
 import numpy as np
 import pandas as pd
 import torch
-from builder import (
-    build_node_mappings,
-    build_temporal_graph_local_diffusion,
-    load_and_prepare_data,
-)
 from sklearn.metrics import (
     accuracy_score,
     confusion_matrix,
@@ -16,9 +11,15 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
 )
-from temporal_models import BasicRecurrentGCN
 from torch_geometric_temporal.signal import DynamicGraphTemporalSignal
 from tqdm import tqdm
+
+from hate_speech_pipeline.builder import (
+    build_node_mappings,
+    build_temporal_graph_local_diffusion,
+    load_and_prepare_data,
+)
+from hate_speech_pipeline.temporal_models import BasicRecurrentGCN
 
 logging.basicConfig(
     level="INFO",
