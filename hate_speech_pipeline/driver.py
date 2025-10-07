@@ -220,7 +220,6 @@ def evaluate_model(
 
 
 def run(
-    evaluate_only=False,
     generate_embeddings=False,
     train_file_path="val_dataset_with_emb.csv",
     test_file_path="test_dataset_with_emb.csv",
@@ -246,21 +245,9 @@ def run(
     author2idx, subreddit2idx, num_subreddits = build_node_mappings(df_combined)
 
     test_dataset = get_graph(author2idx, subreddit2idx, num_subreddits, df_test)
-    if evaluate_only:
-        dcrnn_model = BasicRecurrentGCN(
-            node_features=1,
-            hidden_dim=128,
-            dropout=0.1,
-            num_heads=8,
-        ).to(DEVICE)
-        dcrnn_model.load_state_dict(torch.load("best_dcrnn_model.pt"))
-        criterion = torch.nn.BCEWithLogitsLoss(
-            pos_weight=torch.tensor([75], device=DEVICE, dtype=torch.float32)
-        )
-    else:
-        train_dataset = get_graph(author2idx, subreddit2idx, num_subreddits, df_train)
-        dcrnn_model, criterion = train_model(train_dataset)
-        torch.save(dcrnn_model.state_dict(), "best_dcrnn_model.pt")
+    train_dataset = get_graph(author2idx, subreddit2idx, num_subreddits, df_train)
+
+    dcrnn_model, criterion = train_model(train_dataset)
 
     for i in range(6):
         evaluate_model(dcrnn_model, test_dataset, criterion, threshold=0.2 + i * 0.05)

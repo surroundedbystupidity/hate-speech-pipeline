@@ -14,11 +14,6 @@ logger = logging.getLogger(__name__)
 def main():
     parser = argparse.ArgumentParser(description="DCRNN Hate Speech Pipeline")
     parser.add_argument(
-        "--evaluate-only",
-        action="store_true",
-        help="Only run evaluation.",
-    )
-    parser.add_argument(
         "--generate-embeddings",
         action="store_true",
         help="Don't assume embeddings are available, generate them.",
@@ -51,7 +46,6 @@ def main():
     logger.info(
         "Arguments: %s",
         {
-            "evaluate_only": args.evaluate_only,
             "generate_embeddings": args.generate_embeddings,
             "train_file_path": args.train_file_path,
             "test_file_path": args.test_file_path,
@@ -60,7 +54,6 @@ def main():
         },
     )
     run(
-        evaluate_only=args.evaluate_only,
         generate_embeddings=args.generate_embeddings,
         train_file_path=args.train_file_path,
         test_file_path=args.test_file_path,
