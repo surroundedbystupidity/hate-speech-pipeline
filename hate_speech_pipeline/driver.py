@@ -294,7 +294,7 @@ def run(
     df_results = df_val.copy()
     dcrnn_model, criterion = train_model(train_dataset, epochs=epochs)
 
-    for threshold_candidate in range(24, 40, 4):
+    for threshold_candidate in range(20, 61, 4):
         evaluate_model(
             dcrnn_model,
             val_dataset,
