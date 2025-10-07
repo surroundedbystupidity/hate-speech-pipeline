@@ -1,27 +1,19 @@
-"""
-build_temporal_graph_local_diffusion.py
-
-Drop-in replacement for `build_temporal_graph` that constructs temporal snapshots
-for a **Next-reply toxic (local diffusion)** task.
-
-For each comment c posted in time bin t, the target label is:
-  y[c] = 1  if any *direct* child reply to c arrives in time bin (t+1) and is toxic,
-         0  otherwise.
-
-Features/edges are computed **only from time <= t** (no future leakage).
-The mask selects comments in t that have a valid next window (t+1).
-
-Expected dataframe columns (at minimum):
-  id, parent_id, subreddit, author, created_utc, timestamp, time_bin,
-  class_self, score_f, body, body_emb, toxicity_probability_self
-plus any columns referenced by USER_FEATURE_NAMES and COMMENT_FEATURE_NAMES.
-"""
-
 import logging
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import numpy as np
 import pandas as pd
+import torch
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+from transformers import AutoModel, AutoTokenizer
+
+DEVICE = (
+    "cuda"
+    if torch.cuda.is_available()
+    else "mps" if torch.backends.mps.is_available() else "cpu"
+)
+MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 
 logging.basicConfig(
     level="INFO",
@@ -39,40 +31,9 @@ def build_temporal_graph_local_diffusion(
     comment_feature_names: List[str],
     user_feature_names: List[str],
     tox_thresh: float = 0.5,
-) -> Tuple[
-    List[np.ndarray],
-    List[np.ndarray],
-    List[np.ndarray],
-    List[np.ndarray],
-    Dict[str, int],
-    List[np.ndarray],
-]:
-    """
-    Build DynamicGraphTemporalSignal inputs where labels represent **local diffusion**
-    into the next window (t -> t+1).
+) -> tuple:
 
-    Args
-    ----
-    df : DataFrame
-        Must already include 'timestamp' (datetime64) and 'time_bin' (windowed timestamp).
-    author2idx, subreddit2idx, num_subreddits :
-        Mappings from your precomputed vocabularies (consistent across train/test).
-    comment_feature_names, user_feature_names :
-        Column names to be pulled as node features.
-    tox_thresh : float
-        Threshold to consider a child reply as toxic (default 0.5).
-
-    Returns
-    -------
-    edge_index_list : List[np.ndarray]    # each with shape [2, E]
-    edge_weight_list: List[np.ndarray]    # each with shape [E]
-    features_list   : List[np.ndarray]    # each with shape [N, F]
-    labels_list     : List[np.ndarray]    # each with shape [N, 1]
-    time_vs_count   : Dict[str, int]      # counts per time bin (for plotting/debug)
-    masks_list      : List[np.ndarray]    # each with shape [N], bool mask of nodes to score
-    """
-
-    # --- Preconditions / sorting ---
+    # Sorting
     if "timestamp" not in df.columns:
         df = df.copy()
         df["timestamp"] = pd.to_datetime(df["created_utc"], unit="s", errors="coerce")
@@ -88,7 +49,7 @@ def build_temporal_graph_local_diffusion(
     # Ordered unique bins
     bin_order = np.array(sorted(df["time_bin"].unique()))
 
-    # --- Precompute child lists per parent per bin ---
+    # Precompute child lists per parent per bin
     # parent_id -> { tbin : [child_toxicity_prob, ...] }
     children_by_parent_by_bin: Dict[str, Dict[pd.Timestamp, List[float]]] = {}
 
@@ -107,7 +68,7 @@ def build_temporal_graph_local_diffusion(
             return None
         return bin_order[idx + 1]
 
-    # --- Outputs ---
+    # Outputs
     edge_index_list: List[np.ndarray] = []
     edge_weight_list: List[np.ndarray] = []
     features_list: List[np.ndarray] = []
@@ -115,7 +76,7 @@ def build_temporal_graph_local_diffusion(
     masks_list: List[np.ndarray] = []
     time_vs_count: Dict[str, int] = {}
 
-    # --- Build per-bin snapshots ---
+    # Build per-bin snapshots
     for tbin, group in df.groupby("time_bin"):
         tbin_next = next_bin(tbin)
         logger.debug(
@@ -154,7 +115,7 @@ def build_temporal_graph_local_diffusion(
         # Quick access to current rows
         group_rows = {str(row.id): row for row in group.itertuples(index=False)}
 
-        # ----- Fill features and diffusion labels -----
+        # --Fill features and diffusion labels --
         for cid in node_list:
             row = group_rows[cid]
             idx_local = local_node2idx[f"comment_{cid}"]
@@ -198,7 +159,7 @@ def build_temporal_graph_local_diffusion(
             x[idx_local, feat_offset + sub_idx] = 1.0
             feat_offset += num_subreddits
 
-            # ---- Label: any toxic child in t+1? ----
+            # -Label: any toxic child in t+1? -
             if tbin_next is not None:
                 tox_list_next = children_by_parent_by_bin.get(cid, {}).get(
                     tbin_next, []
@@ -219,7 +180,7 @@ def build_temporal_graph_local_diffusion(
                 logger.debug("Comment %s has no next bin; no label assigned.", cid)
                 mask[idx_local] = False  # last bin has no label
 
-        # ----- Edges within t (child -> parent if both in node_list) -----
+        # --Edges within t (child -> parent if both in node_list) --
         edges: List[List[int]] = []
         edge_weights: List[float] = []
 
@@ -264,8 +225,32 @@ def build_temporal_graph_local_diffusion(
     )
 
 
-def load_and_prepare_data(csv_path, window_size_hours):
-    df = pd.read_csv(csv_path).head(20000)
+def generate_comment_embeddings(
+    df: pd.DataFrame, col_name: str, batch_size=96
+) -> np.ndarray:
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    emb_model = AutoModel.from_pretrained(MODEL_NAME).to(DEVICE)
+    comments = df[col_name].to_list()
+    loader = DataLoader(comments, batch_size=batch_size)  # type: ignore
+
+    all_embeddings = []
+    for batch in tqdm(loader, desc="Generating embeddings"):
+        inputs = tokenizer(
+            batch, return_tensors="pt", padding=True, truncation=True
+        ).to(DEVICE)
+        with torch.no_grad():
+            outputs = emb_model(**inputs)
+        emb = outputs.last_hidden_state.mean(dim=1)
+        all_embeddings.append(emb.cpu())
+    return torch.cat(all_embeddings).numpy()
+
+
+def load_and_prepare_data(
+    csv_path, window_size_hours, generate_embeddings, subset_count=500
+):
+    df = pd.read_csv(csv_path)
+    if subset_count is not None and subset_count > 0:
+        df = df.head(subset_count)
 
     # Drop NAs and filter subreddit without regex overhead (regex is slower)
     mask_valid = df["subreddit"].notna() & ~df["subreddit"].str.contains(" ")
@@ -278,20 +263,22 @@ def load_and_prepare_data(csv_path, window_size_hours):
     # Precompute time bins once
     df["time_bin"] = df["timestamp"].dt.floor(f"{window_size_hours}h")
 
-    trans = str.maketrans({"[": "", "]": "", "\n": " "})
-    cleaned = (
-        df["body_emb"]
-        .astype(str)
-        .str.translate(trans)
-        .str.replace(r"\s+", " ", regex=True)
-        .str.strip()
-    )
-
     # Convert embeddings string to vector.
-    empty = np.array([], dtype=np.float32)
-    df["body_emb"] = cleaned.map(
-        lambda s: np.fromstring(s, dtype=np.float32, sep=" ") if s else empty
-    )
+    if generate_embeddings:
+        df["body_emb"] = list(generate_comment_embeddings(df, "body"))
+        df.to_csv(f"{csv_path.replace('.csv', '')}_with_embeddings.csv", index=False)
+    else:
+        translation = str.maketrans({"[": "", "]": "", "\n": " "})
+        cleaned = (
+            df["body_emb"]
+            .astype(str)
+            .str.translate(translation)
+            .str.replace(r"\s+", " ", regex=True)
+            .str.strip()
+        )
+        df["body_emb"] = cleaned.map(
+            lambda s: np.fromstring(s, dtype=np.float32, sep=" ")
+        )
     return df
 
 

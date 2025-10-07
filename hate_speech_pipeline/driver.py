@@ -3,6 +3,11 @@ import logging
 import numpy as np
 import pandas as pd
 import torch
+from builder import (
+    build_node_mappings,
+    build_temporal_graph_local_diffusion,
+    load_and_prepare_data,
+)
 from sklearn.metrics import (
     accuracy_score,
     confusion_matrix,
@@ -11,15 +16,9 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
 )
+from temporal_models import BasicRecurrentGCN
 from torch_geometric_temporal.signal import DynamicGraphTemporalSignal
 from tqdm import tqdm
-
-from builder_v2 import (
-    build_node_mappings,
-    build_temporal_graph_local_diffusion,
-    load_and_prepare_data,
-)
-from temporal_models import BasicRecurrentGCN
 
 logging.basicConfig(
     level="INFO",
@@ -54,7 +53,7 @@ USER_FEATURE_NAMES: list[str] = [
     "user_hate_comments_ord",
     "user_hate_ratio_ord",
 ]
-WINDOW_SIZE_HOURS = 1
+WINDOW_SIZE_HOURS = 2
 DEVICE = (
     "cuda"
     if torch.cuda.is_available()
@@ -169,10 +168,10 @@ def evaluate_model(
     all_labels = []
     model.eval()
     total_samples = 0
-    probs_min = float("inf")
-    probs_max = float("-inf")
     total_loss = 0
     total_samples = 0
+    prob_min = 1.0
+    prob_max = 0.0
 
     with torch.no_grad():
         for idx, snapshot in tqdm(
@@ -193,47 +192,75 @@ def evaluate_model(
 
             probs = torch.sigmoid(masked_logits).cpu()
             all_labels.append(masked_labels.cpu())
-            all_preds.append((probs > threshold).int())  # threshold tuned elsewhere
+            all_preds.append((probs > threshold).int())
+
+            prob_min = min(prob_min, probs.min().item())
+            prob_max = max(prob_max, probs.max().item())
 
     avg_loss = total_loss / total_samples if total_samples > 0 else float("nan")
 
     logger.info(
-        "Average testing Loss = %.4f | prediction probability range: [%.3f, %.3f]",
+        "Average testing Loss = %.4f at threshold %.2f",
         avg_loss,
-        probs_min,
-        probs_max,
+        threshold,
     )
     all_preds = torch.cat(all_preds).numpy().flatten()
     all_labels = torch.cat(all_labels).numpy().flatten()
 
     save_predictions_and_print_metrics(all_preds, all_labels)
-
     logger.info(
-        "Pred Range (All): [%.3f, %.3f], Mean: %.3f",
+        "Prediction Probability Range (Min-Max): [%.3f, %.3f]", prob_min, prob_max
+    )
+    logger.info(
+        "Prediction Value Range (All): [%.3f, %.3f], Mean: %.3f",
         all_preds.min().item(),
         all_preds.max().item(),
         all_preds.mean().item(),
     )
 
 
-def run():
-    train_file_path = "val_dataset_with_emb.csv"
-    test_file_path = "test_dataset_with_emb.csv"
-    logger.info("Preparing windows for %s hours.", WINDOW_SIZE_HOURS)
-    df_train = load_and_prepare_data(train_file_path, WINDOW_SIZE_HOURS)
+def run(
+    evaluate_only=False,
+    generate_embeddings=False,
+    train_file_path="val_dataset_with_emb.csv",
+    test_file_path="test_dataset_with_emb.csv",
+    subset_count=0,
+    window_size_hours=WINDOW_SIZE_HOURS,
+):
+    logger.info("Preparing windows for %s hours.", window_size_hours)
+    df_train = load_and_prepare_data(
+        train_file_path,
+        window_size_hours,
+        generate_embeddings=generate_embeddings,
+        subset_count=subset_count,
+    )
     logger.info("Loaded training data with %d rows.", len(df_train))
-    df_test = load_and_prepare_data(test_file_path, WINDOW_SIZE_HOURS)
+    df_test = load_and_prepare_data(
+        test_file_path,
+        window_size_hours,
+        generate_embeddings=generate_embeddings,
+        subset_count=subset_count,
+    )
     logger.info("Loaded test data with %d rows.", len(df_test))
-    # Build node mappings from combined data to ensure consistency
     df_combined = pd.concat([df_train, df_test], ignore_index=True)
     author2idx, subreddit2idx, num_subreddits = build_node_mappings(df_combined)
 
-    train_dataset = get_graph(author2idx, subreddit2idx, num_subreddits, df_train)
     test_dataset = get_graph(author2idx, subreddit2idx, num_subreddits, df_test)
+    if evaluate_only:
+        dcrnn_model = BasicRecurrentGCN(
+            node_features=1,
+            hidden_dim=128,
+            dropout=0.1,
+            num_heads=8,
+        ).to(DEVICE)
+        dcrnn_model.load_state_dict(torch.load("best_dcrnn_model.pt"))
+        criterion = torch.nn.BCEWithLogitsLoss(
+            pos_weight=torch.tensor([75], device=DEVICE, dtype=torch.float32)
+        )
+    else:
+        train_dataset = get_graph(author2idx, subreddit2idx, num_subreddits, df_train)
+        dcrnn_model, criterion = train_model(train_dataset)
+        torch.save(dcrnn_model.state_dict(), "best_dcrnn_model.pt")
 
-    model, criterion = train_model(train_dataset)
     for i in range(6):
-        evaluate_model(model, test_dataset, criterion, threshold=0.2 + i * 0.05)
-
-
-run()
+        evaluate_model(dcrnn_model, test_dataset, criterion, threshold=0.2 + i * 0.05)

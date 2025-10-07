@@ -46,24 +46,28 @@ class BasicRecurrentGCN(nn.Module):
 
 
 class BasicAttentionGCN(nn.Module):
-    def __init__(self, node_features, hidden_dim=128, dropout=0.1, num_heads=8):
+
+    def __init__(self, node_features, periods=4, hidden_dim=128, dropout=0.1):
         super().__init__()
-        self.recurrent = A3TGCN(node_features, hidden_dim, K=1)
+        self.recurrent = A3TGCN(node_features, hidden_dim, periods=periods)
         self.fc = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, 1),
         )
-        self.attention = nn.MultiheadAttention(
-            embed_dim=hidden_dim, num_heads=num_heads, dropout=dropout, batch_first=True
-        )
 
     def forward(self, x, edge_index):
-        h = self.recurrent(x, edge_index)
-        attn_out, _ = self.attention(h, h, h)
-        h = h + attn_out
-        out = self.fc(h)
+        """
+        x: (batch_size, num_nodes, num_timesteps, node_features)
+        edge_index: graph connectivity
+        """
+        # Get node embeddings from A3TGCN
+        # h = self.recurrent(x, edge_index)  # (batch_size, num_nodes, hidden_dim)
+        h = self.recurrent(x.view(x.shape[0], 1, x.shape[1]), edge_index)
+        # Map hidden_dim to output per node
+        out = self.fc(h)  # (batch_size, num_nodes, 1)
+
         return out
 
 
