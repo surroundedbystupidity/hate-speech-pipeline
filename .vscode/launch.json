@@ -62,7 +62,31 @@
         "--val-file-path",
         "retrain_validation10_with_embeddings.csv",
         "--epochs",
-        "20"
+        "20",
+        "--subset-count",
+        "50000"
+      ]
+    },
+    {
+      "name": "Driver - Classification - With Embeddings",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "/Users/sujay/Documents/Workspace/hate-speech-pipeline/main.py",
+      "console": "integratedTerminal",
+      "args": [
+        "--mode",
+        "classification",
+        "--train-file-path",
+        "retrain_train80.csv",
+        "--test-file-path",
+        "retrain_test10.csv",
+        "--val-file-path",
+        "retrain_validation10.csv",
+        "--epochs",
+        "20",
+        "--subset-count",
+        "50000",
+        "--generate-embeddings"
       ]
     }
   ]

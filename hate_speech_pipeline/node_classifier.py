@@ -22,14 +22,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def create_pyg_dataset(
+def create_static_graph_dataset(
     df: pd.DataFrame,
     feature_columns,
     scaler=None,
     response_column="toxicity_probability_self",
     id_col="id",
     parent_id_col="parent_id",
-):
+) -> tuple[Data, StandardScaler]:
     df_clone = df.copy()
 
     # Coerce feature columns to numeric
@@ -124,7 +124,7 @@ def load_and_prepare_static_data(
 
     # Drop NAs and filter subreddit without regex overhead
     mask_valid = df["subreddit"].notna() & ~df["subreddit"].str.contains(" ")
-    df = df[mask_valid & df["created_utc"].notna()]
+    df = df[mask_valid & df["created_utc"].notna() & df["body"].notna()]
 
     # Vectorized datetime conversion
     df["timestamp"] = pd.to_datetime(df["created_utc"], unit="s", errors="coerce")
@@ -146,7 +146,6 @@ def load_and_prepare_static_data(
         df["body_emb"] = cleaned.map(
             lambda s: np.fromstring(s, dtype=np.float32, sep=" ")
         )
-
     return df
 
 

@@ -21,7 +21,7 @@ from hate_speech_pipeline.builder import (
     load_and_prepare_data,
 )
 from hate_speech_pipeline.node_classifier import (
-    create_pyg_dataset,
+    create_static_graph_dataset,
     evaluate_static_model,
     load_and_prepare_static_data,
     train_static_gcn,
@@ -353,9 +353,9 @@ def run_classification(
     feature_cols = COMMENT_FEATURE_NAMES + USER_FEATURE_NAMES
 
     # Create datasets with normalization
-    train_data, scaler = create_pyg_dataset(df_train, feature_cols)
-    test_data, _ = create_pyg_dataset(df_test, feature_cols, scaler=scaler)
-    val_data, _ = create_pyg_dataset(df_val, feature_cols, scaler=scaler)
+    train_data, scaler = create_static_graph_dataset(df_train, feature_cols)
+    test_data, _ = create_static_graph_dataset(df_test, feature_cols, scaler=scaler)
+    val_data, _ = create_static_graph_dataset(df_val, feature_cols, scaler=scaler)
 
     train_data = train_data.to(DEVICE)
     test_data = test_data.to(DEVICE)
@@ -426,8 +426,12 @@ def run_classification(
             # Retrain on full train+val and test on test_data
             logger.info("Retraining on best params.")
             full_train_df = pd.concat([df_train, df_val], ignore_index=True)
-            full_train_data, scaler = create_pyg_dataset(full_train_df, feature_cols)
-            test_data, _ = create_pyg_dataset(df_test, feature_cols, scaler=scaler)
+            full_train_data, scaler = create_static_graph_dataset(
+                full_train_df, feature_cols
+            )
+            test_data, _ = create_static_graph_dataset(
+                df_test, feature_cols, scaler=scaler
+            )
             full_train_data = full_train_data.to(DEVICE)
             test_data = test_data.to(DEVICE)
             best_model = train_static_gcn(

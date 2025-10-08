@@ -4,7 +4,6 @@ from typing import Dict, List
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
@@ -226,15 +225,14 @@ def build_temporal_graph_local_diffusion(
 
 
 def generate_comment_embeddings(
-    df: pd.DataFrame, col_name: str, batch_size=96
+    df: pd.DataFrame, col_name: str, batch_size=128
 ) -> np.ndarray:
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     emb_model = AutoModel.from_pretrained(MODEL_NAME).to(DEVICE)
     comments = df[col_name].to_list()
-    loader = DataLoader(comments, batch_size=batch_size)  # type: ignore
-
     all_embeddings = []
-    for batch in tqdm(loader, desc="Generating embeddings"):
+    for i in tqdm(range(0, len(comments), batch_size), desc="Generating embeddings"):
+        batch = comments[i : i + batch_size]  # list of strings
         inputs = tokenizer(
             batch, return_tensors="pt", padding=True, truncation=True
         ).to(DEVICE)
