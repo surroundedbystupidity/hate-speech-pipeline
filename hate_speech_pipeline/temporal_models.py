@@ -33,14 +33,17 @@ class BasicRecurrentGCN(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, 1),
         )
-        # self.attention = nn.MultiheadAttention(
+        self.attention = AttentionLayer(
+            hidden_dim, num_heads=num_heads, dropout=dropout
+        )
+        # self.multi_attention = nn.MultiheadAttention(
         #     embed_dim=hidden_dim, num_heads=num_heads, dropout=dropout, batch_first=True
         # )
 
     def forward(self, x, edge_index):
         h = self.recurrent(x, edge_index)
-        # attn_out, _ = self.attention(h, h, h)
-        # h = h + attn_out
+        attn_out = self.attention(h)
+        h = h + attn_out
         out = self.fc(h)
         return out
 
