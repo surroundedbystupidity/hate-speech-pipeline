@@ -45,6 +45,25 @@
         "--epochs",
         "20"
       ]
+    },
+    {
+      "name": "Driver - Classification - No Embeddings",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "/Users/sujay/Documents/Workspace/hate-speech-pipeline/main.py",
+      "console": "integratedTerminal",
+      "args": [
+        "--mode",
+        "classification",
+        "--train-file-path",
+        "retrain_train80_with_embeddings.csv",
+        "--test-file-path",
+        "retrain_test10_with_embeddings.csv",
+        "--val-file-path",
+        "retrain_validation10_with_embeddings.csv",
+        "--epochs",
+        "20"
+      ]
     }
   ]
 }

@@ -1,11 +1,10 @@
 # Hate Speech Detection
 
-## Execution Instructions
-
-### Command Line Arguments
+## Command Line Arguments
 
 | Argument              | Type   | Default                    | Description                                           |
 | --------------------- | ------ | -------------------------- | ----------------------------------------------------- |
+| --mode                | str    | "diffusion"                | One of `"diffusion"` or `"classification"`.           |
 | --generate-embeddings | flag   | False                      | Don't assume embeddings are available, generate them. |
 | --train-file-path     | string | train_dataset_with_emb.csv | Path to the training CSV file.                        |
 | --test-file-path      | string | test_dataset_with_emb.csv  | Path to the test CSV file.                            |
@@ -14,7 +13,9 @@
 | --window-size-hours   | int    | 1                          | Number of hours to use for snapshot window.           |
 | --epochs              | int    | 10                         | Number of epochs to train for.                        |
 
-### Sample Commands
+## Sample Commands
+
+### Diffusion
 
 1. Look at a subset of records, **recommended to run this first**.
 
@@ -44,4 +45,15 @@ python main.py \
  --train-file-path retrain_train80_with_embeddings.csv \
  --test-file-path retrain_test10_with_embeddings.csv \
  --val-file-path retrain_validation10_with_embeddings.csv \
+```
+
+### Node Classification
+
+```
+python main.py \
+ --mode classification \
+ --train-file-path retrain_train80_with_embeddings.csv \
+ --test-file-path retrain_test10_with_embeddings.csv \
+ --val-file-path retrain_validation10_with_embeddings.csv \
+ --epochs 20
 ```

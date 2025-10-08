@@ -21,7 +21,7 @@ class StaticGCN(nn.Module):
 
         # Attention layer parameters
         # TODO: See if this produces the same results if removed.
-        self.attn_fc = nn.Linear(hidden_dim // 2, 1)
+        # self.attn_fc = nn.Linear(hidden_dim // 2, 1)
 
     def forward(self, x, edge_index):
         # Layer 1
@@ -43,10 +43,10 @@ class StaticGCN(nn.Module):
         x = self.dropout(x)
 
         # Attention mechanism (global node attention)
-        attn_weights = torch.softmax(self.attn_fc(x), dim=0)  # (N, 1)
-        x_attn = torch.sum(attn_weights * x, dim=0, keepdim=True)  # (1, F)
+        # attn_weights = torch.softmax(self.attn_fc(x), dim=0)  # (N, 1)
+        # x_attn = torch.sum(attn_weights * x, dim=0, keepdim=True)  # (1, F)
 
         # Output with sigmoid for 0-1 range
-        x = self.readout(x_attn)
+        x = self.readout(x)
         x = torch.sigmoid(x)
         return x.squeeze(0)

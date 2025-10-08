@@ -1,4 +1,5 @@
 import logging
+import sys
 
 import numpy as np
 import pandas as pd
@@ -18,6 +19,12 @@ from hate_speech_pipeline.builder import (
     build_node_mappings,
     build_temporal_graph_local_diffusion,
     load_and_prepare_data,
+)
+from hate_speech_pipeline.node_classifier import (
+    create_pyg_dataset,
+    evaluate_static_model,
+    load_and_prepare_static_data,
+    train_static_gcn,
 )
 from hate_speech_pipeline.temporal_models import BasicRecurrentGCN
 
@@ -248,7 +255,7 @@ def evaluate_model(
     )
 
 
-def run(
+def run_diffusion(
     generate_embeddings=False,
     train_file_path="train_dataset_with_emb.csv",
     val_file_path="val_dataset_with_emb.csv",
@@ -320,3 +327,86 @@ def run(
         df_results=df_results,
     )
     logger.info("Completed all evaluations. Results:\n%s", df_results.to_markdown())
+
+
+def run_classification(
+    generate_embeddings=False,
+    train_file_path="train_dataset_with_emb.csv",
+    val_file_path="val_dataset_with_emb.csv",
+    test_file_path="test_dataset_with_emb.csv",
+    subset_count=0,
+    epochs=10,
+):
+    # Load and prepare data
+    df_train = load_and_prepare_static_data(
+        train_file_path, subset_count, generate_embeddings
+    )
+    df_test = load_and_prepare_static_data(
+        test_file_path, subset_count, generate_embeddings
+    )
+    df_val = load_and_prepare_static_data(
+        val_file_path, subset_count, generate_embeddings
+    )
+    logger.info("Train data: %s", df_train.shape)
+    logger.info("Test data: %s", df_test.shape)
+
+    feature_cols = COMMENT_FEATURE_NAMES + USER_FEATURE_NAMES
+
+    # Create datasets with normalization
+    train_data, scaler = create_pyg_dataset(df_train, feature_cols)
+    test_data, _ = create_pyg_dataset(df_test, feature_cols, scaler=scaler)
+    val_data, _ = create_pyg_dataset(df_val, feature_cols, scaler=scaler)
+
+    train_data = train_data.to(DEVICE)
+    test_data = test_data.to(DEVICE)
+    val_data = val_data.to(DEVICE)
+
+    model = train_static_gcn(epochs, train_data, device=DEVICE)
+
+    if model is None:
+        logger.error("No model, exiting.")
+        sys.exit(1)
+
+    # Load best model
+    model.load_state_dict(torch.load("best_gcn_model.pt"))
+
+    # Evaluate on test set
+    df_results = evaluate_static_model(model, test_data)
+
+    logger.info("=" * 50)
+    logger.info("Test set evaluation results:\n%s", df_results.to_markdown())
+    logger.info("=" * 50)
+
+    # results_df.to_csv("gcn_predictions.csv", index=False)
+    # logger.info("\nPredictions saved to 'gcn_predictions.csv'")
+
+
+def run(
+    generate_embeddings=False,
+    train_file_path="train_dataset_with_emb.csv",
+    val_file_path="val_dataset_with_emb.csv",
+    test_file_path="test_dataset_with_emb.csv",
+    subset_count=0,
+    window_size_hours=WINDOW_SIZE_HOURS,
+    epochs=10,
+    mode="diffusion",
+):
+    if mode == "diffusion":
+        run_diffusion(
+            generate_embeddings=generate_embeddings,
+            train_file_path=train_file_path,
+            val_file_path=val_file_path,
+            test_file_path=test_file_path,
+            subset_count=subset_count,
+            window_size_hours=window_size_hours,
+            epochs=epochs,
+        )
+    else:
+        run_classification(
+            generate_embeddings=generate_embeddings,
+            train_file_path=train_file_path,
+            val_file_path=val_file_path,
+            test_file_path=test_file_path,
+            subset_count=subset_count,
+            epochs=epochs,
+        )

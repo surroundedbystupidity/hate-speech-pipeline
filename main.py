@@ -20,6 +20,12 @@ def main():
         help="Don't assume embeddings are available, generate them.",
     )
     parser.add_argument(
+        "--mode",
+        type=str,
+        default="diffusion",
+        help="Mode to run the model in: diffusion or classification.",
+    )
+    parser.add_argument(
         "--train-file-path",
         type=str,
         default="val_dataset_with_emb.csv",
@@ -59,6 +65,7 @@ def main():
     logger.info(
         "Arguments: %s",
         {
+            "mode": args.mode,
             "generate_embeddings": args.generate_embeddings,
             "train_file_path": args.train_file_path,
             "val_file_path": args.val_file_path,
@@ -76,6 +83,7 @@ def main():
         subset_count=args.subset_count,
         window_size_hours=args.window_size_hours,
         epochs=args.epochs,
+        mode=args.mode,
     )
 
 
