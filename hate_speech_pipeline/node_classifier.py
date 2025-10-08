@@ -120,7 +120,7 @@ def load_and_prepare_static_data(
 ) -> pd.DataFrame:
     df = pd.read_csv(csv_path)
     if subset_count > 0:
-        df = df.sample(n=subset_count, random_state=42)
+        df = df.head(subset_count)
 
     # Drop NAs and filter subreddit without regex overhead
     mask_valid = df["subreddit"].notna() & ~df["subreddit"].str.contains(" ")

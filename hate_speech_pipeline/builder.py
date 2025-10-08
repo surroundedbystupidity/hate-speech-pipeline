@@ -251,8 +251,12 @@ def load_and_prepare_data(
         df = df.head(subset_count)
 
     # Drop NAs and filter subreddit without regex overhead (regex is slower)
-    mask_valid = df["subreddit"].notna() & ~df["subreddit"].str.contains(" ")
-    df = df[mask_valid & df["created_utc"].notna()]
+    df = df[
+        df["subreddit"].notna()
+        & ~df["subreddit"].str.contains(" ")
+        & df["created_utc"].notna()
+        & df["body"].notna()
+    ]
 
     # Vectorized datetime conversion
     df["timestamp"] = pd.to_datetime(df["created_utc"], unit="s", errors="coerce")

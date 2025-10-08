@@ -204,8 +204,8 @@ def evaluate_model(
     total_samples = 0
     total_loss = 0
     total_samples = 0
-    prob_min = 1.0
-    prob_max = 0.0
+    prob_min = 1
+    prob_max = -1
 
     with torch.no_grad():
         for idx, snapshot in tqdm(
