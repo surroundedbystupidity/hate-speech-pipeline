@@ -393,7 +393,7 @@ def run_classification(
                         continue
                     model.load_state_dict(torch.load("best_gcn_model.pt"))
                     df_results = evaluate_static_model(model, val_data, cv=True)
-                    logger.info(
+                    logger.debug(
                         "Test set evaluation results:\n%s", df_results.to_markdown()
                     )
                     cv_results.append(

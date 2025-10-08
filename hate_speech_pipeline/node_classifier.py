@@ -184,11 +184,11 @@ def print_metrics(all_preds, all_labels, df_results, cv) -> pd.DataFrame:
 
     plot_results(all_preds, all_labels, cv=cv)
 
-    logger.info("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
-    logger.info("MSE = %.4f", mse)
-    logger.info("MAE = %.4f", mae)
-    logger.info("R2 = %.4f", r2)
-    logger.info("Log Loss = %.4f", ll)
+    logger.debug("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+    logger.debug("MSE = %.4f", mse)
+    logger.debug("MAE = %.4f", mae)
+    logger.debug("R2 = %.4f", r2)
+    logger.debug("Log Loss = %.4f", ll)
     logger.debug("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
     return df_results
 
