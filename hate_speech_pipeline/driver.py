@@ -361,21 +361,104 @@ def run_classification(
     test_data = test_data.to(DEVICE)
     val_data = val_data.to(DEVICE)
 
-    model = train_static_gcn(epochs, train_data, device=DEVICE)
+    # Hyperparameter grid
+    hidden_dims = [196, 256]
+    learning_rates = [0.001, 0.0005]
+    decays = [1e-5, 1e-4]
+    dropouts = [0.1, 0.3]
 
-    if model is None:
-        logger.error("No model, exiting.")
-        sys.exit(1)
+    cv_results = []
+    for hidden_dim in tqdm(hidden_dims, desc="Hidden Dims"):
+        for learning_rate in tqdm(learning_rates, desc="Learning Rates"):
+            for decay in tqdm(decays, desc="Decays"):
+                for dropout in tqdm(dropouts, desc="Dropouts"):
+                    logger.info(
+                        "CV: hidden_dim=%d, lr=%.5f, decay=%.1e, dropout=%.2f",
+                        hidden_dim,
+                        learning_rate,
+                        decay,
+                        dropout,
+                    )
+                    model = train_static_gcn(
+                        epochs,
+                        train_data,
+                        device=DEVICE,
+                        hidden_dim=hidden_dim,
+                        learning_rate=learning_rate,
+                        decay=decay,
+                        dropout=dropout,
+                    )
+                    if model is None:
+                        logger.error("No model, skipping this config.")
+                        continue
+                    model.load_state_dict(torch.load("best_gcn_model.pt"))
+                    df_results = evaluate_static_model(model, val_data, cv=True)
+                    logger.info(
+                        "Test set evaluation results:\n%s", df_results.to_markdown()
+                    )
+                    cv_results.append(
+                        {
+                            "hidden_dim": hidden_dim,
+                            "learning_rate": learning_rate,
+                            "decay": decay,
+                            "dropout": dropout,
+                            **df_results.iloc[0].to_dict(),
+                        }
+                    )
 
-    # Load best model
-    model.load_state_dict(torch.load("best_gcn_model.pt"))
+    if cv_results:
+        df_cv = pd.DataFrame(cv_results)
+        logger.info("\nCV summary:\n%s", df_cv.to_markdown())
+        if "r2" in df_cv.columns:
+            best_idx = df_cv["r2"].idxmax()
+            best_row = df_cv.loc[best_idx]
+            if isinstance(best_row, pd.DataFrame):
+                best_row = best_row.iloc[0]
+            logger.info(
+                "Best r2: %.4f with params: hidden_dim=%d, learning_rate=%.5f, decay=%.1e, dropout=%.2f",
+                best_row["r2"],
+                best_row["hidden_dim"],
+                best_row["learning_rate"],
+                best_row["decay"],
+                best_row["dropout"],
+            )
 
-    # Evaluate on test set
-    df_results = evaluate_static_model(model, test_data)
-
-    logger.info("=" * 50)
-    logger.info("Test set evaluation results:\n%s", df_results.to_markdown())
-    logger.info("=" * 50)
+            # Retrain on full train+val and test on test_data
+            logger.info("Retraining on best params.")
+            full_train_df = pd.concat([df_train, df_val], ignore_index=True)
+            full_train_data, scaler = create_pyg_dataset(full_train_df, feature_cols)
+            test_data, _ = create_pyg_dataset(df_test, feature_cols, scaler=scaler)
+            full_train_data = full_train_data.to(DEVICE)
+            test_data = test_data.to(DEVICE)
+            best_model = train_static_gcn(
+                epochs,
+                full_train_data,
+                device=DEVICE,
+                hidden_dim=int(
+                    getattr(
+                        best_row["hidden_dim"], "item", lambda: best_row["hidden_dim"]
+                    )()
+                ),
+                learning_rate=float(
+                    getattr(
+                        best_row["learning_rate"],
+                        "item",
+                        lambda: best_row["learning_rate"],
+                    )()
+                ),
+                decay=float(
+                    getattr(best_row["decay"], "item", lambda: best_row["decay"])()
+                ),
+                dropout=float(
+                    getattr(best_row["dropout"], "item", lambda: best_row["dropout"])()
+                ),
+            )
+            if best_model is not None:
+                best_model.load_state_dict(torch.load("best_gcn_model.pt"))
+                test_results = evaluate_static_model(best_model, test_data, cv=False)
+                logger.info(
+                    "Test set results with best params:\n%s", test_results.to_markdown()
+                )
 
     # results_df.to_csv("gcn_predictions.csv", index=False)
     # logger.info("\nPredictions saved to 'gcn_predictions.csv'")

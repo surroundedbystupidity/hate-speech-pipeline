@@ -1,10 +1,11 @@
 import logging
+from datetime import datetime
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.metrics import log_loss, mean_absolute_error, mean_squared_error, r2_score
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.preprocessing import StandardScaler
 from torch import nn, optim
 from torch_geometric.data import Data
@@ -79,34 +80,32 @@ def create_pyg_dataset(
     return data, scaler
 
 
-def plot_results():
-    df_res = pd.read_csv(
-        "/Users/sujay/Documents/Workspace/hate-speech-pipeline/gcn_predictions.csv"
-    )
-
+def plot_results(all_preds, all_labels, cv=False):
+    if cv:
+        return
     # Plot histograms for value distributions
     fig, axes = plt.subplots(2, 2)
     fig.suptitle("Distribution of Prediction Results")
 
     # Prediction histogram
-    axes[0, 0].hist(
-        df_res["prediction"], bins=50, alpha=0.7, color="blue", edgecolor="black"
-    )
+    axes[0, 0].hist(all_preds, bins=50, alpha=0.7, color="blue", edgecolor="black")
     axes[0, 0].set_title("Prediction Distribution")
     axes[0, 0].set_xlabel("Prediction Value")
     axes[0, 0].set_ylabel("Frequency")
 
     # Ground truth histogram
-    axes[0, 1].hist(
-        df_res["ground_truth"], bins=50, alpha=0.7, color="green", edgecolor="black"
-    )
+    axes[0, 1].hist(all_labels, bins=50, alpha=0.7, color="green", edgecolor="black")
     axes[0, 1].set_title("Ground Truth Distribution")
     axes[0, 1].set_xlabel("Ground Truth Value")
     axes[0, 1].set_ylabel("Frequency")
 
     # Absolute residual histogram
     axes[1, 0].hist(
-        df_res["absolute_error"], bins=50, alpha=0.7, color="orange", edgecolor="black"
+        np.abs(all_preds - all_labels),
+        bins=50,
+        alpha=0.7,
+        color="orange",
+        edgecolor="black",
     )
     axes[1, 0].set_title("Absolute Error Distribution")
     axes[1, 0].set_xlabel("Absolute Error Value")
@@ -114,12 +113,6 @@ def plot_results():
 
     plt.tight_layout()
     plt.show()
-
-    # Print summary statistics
-    logger.info(
-        "Summary Statistics: \n %s",
-        df_res[["prediction", "ground_truth", "absolute_error"]].describe(),
-    )
 
 
 def load_and_prepare_static_data(
@@ -157,7 +150,7 @@ def load_and_prepare_static_data(
     return df
 
 
-def evaluate_static_model(model, data) -> pd.DataFrame:
+def evaluate_static_model(model, data, cv) -> pd.DataFrame:
     """Get predictions and calculate metrics"""
     model.eval()
     with torch.no_grad():
@@ -165,11 +158,11 @@ def evaluate_static_model(model, data) -> pd.DataFrame:
         ground_truth = data.y.cpu().numpy().flatten()
 
         df_val = pd.DataFrame(columns=["mse", "mae", "r2", "log_loss"])
-        print_metrics(predictions, ground_truth, df_val)
+        print_metrics(predictions, ground_truth, df_val, cv=cv)
         return df_val
 
 
-def print_metrics(all_preds, all_labels, df_results) -> pd.DataFrame:
+def print_metrics(all_preds, all_labels, df_results, cv) -> pd.DataFrame:
     mse = mean_squared_error(all_labels, all_preds)
     mae = mean_absolute_error(all_labels, all_preds)
     r2 = r2_score(all_labels, all_preds)
@@ -189,6 +182,8 @@ def print_metrics(all_preds, all_labels, df_results) -> pd.DataFrame:
             "log_loss": ll,
         }
 
+    plot_results(all_preds, all_labels, cv=cv)
+
     logger.info("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
     logger.info("MSE = %.4f", mse)
     logger.info("MAE = %.4f", mae)
@@ -198,18 +193,27 @@ def print_metrics(all_preds, all_labels, df_results) -> pd.DataFrame:
     return df_results
 
 
-def train_static_gcn(epochs, train_data, device):
+def train_static_gcn(
+    epochs,
+    train_data,
+    device,
+    hidden_dim=128,
+    dropout=0.3,
+    learning_rate=0.001,
+    decay=1e-5,
+):
     if train_data.x is None:
         return None
 
     gcn_model = StaticGCN(
         num_node_features=train_data.x.shape[1],
+        hidden_dim=hidden_dim,
+        dropout=dropout,
         output_dimension=1,
     ).to(device)
 
-    optimizer = optim.AdamW(gcn_model.parameters(), lr=0.001, weight_decay=1e-5)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.5, patience=5
+    optimizer = optim.AdamW(
+        gcn_model.parameters(), lr=learning_rate, weight_decay=decay
     )
 
     # Binary Cross-Entropy Loss
@@ -246,5 +250,4 @@ def train_static_gcn(epochs, train_data, device):
             logger.info("Early stopping at epoch %d", epoch)
             break
 
-        scheduler.step(loss)
     return gcn_model
