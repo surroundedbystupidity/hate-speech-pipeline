@@ -25,8 +25,10 @@
         "--val-file-path",
         "retrain_validation10.csv",
         "--subset-count",
-        "10000",
-        "--generate-embeddings"
+        "50000",
+        "--generate-embeddings",
+        "--epochs",
+        "20"
       ]
     },
     {
@@ -43,7 +45,9 @@
         "--val-file-path",
         "retrain_validation10_with_embeddings.csv",
         "--epochs",
-        "20"
+        "20",
+        "--subset-count",
+        "5000"
       ]
     },
     {
