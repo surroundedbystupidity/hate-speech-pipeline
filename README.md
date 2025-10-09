@@ -57,3 +57,8 @@ python main.py \
  --val-file-path retrain_validation10_with_embeddings.csv \
  --epochs 20
 ```
+
+
+|    |   threshold |      mse |   accuracy |   precision |   recall |   f1_score |
+|---:|------------:|---------:|-----------:|------------:|---------:|-----------:|
+|  0 |         0.1 | 0.549267 |   0.450733 |  0.00858322 | 0.522222 |        nan |
