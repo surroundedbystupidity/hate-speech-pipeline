@@ -196,7 +196,7 @@ def evaluate_model(
     threshold=0.2,
     df_results: pd.DataFrame | None = None,
     run_validation=False,
-):
+) -> float:
     test_masks = test_dataset.masks
     all_preds = []
     all_labels = []
@@ -253,6 +253,7 @@ def evaluate_model(
         all_preds.max().item(),
         all_preds.mean().item(),
     )
+    return (prob_min + prob_max) / 2
 
 
 def run_diffusion(
@@ -264,6 +265,29 @@ def run_diffusion(
     window_size_hours=WINDOW_SIZE_HOURS,
     epochs=10,
 ):
+    return run_diffusion_train_test(
+        generate_embeddings=generate_embeddings,
+        train_file_path=train_file_path,
+        val_file_path=val_file_path,
+        test_file_path=test_file_path,
+        subset_count=subset_count,
+        window_size_hours=window_size_hours,
+        epochs=epochs,
+    )
+
+
+def run_diffusion_cv(
+    generate_embeddings=False,
+    train_file_path="train_dataset_with_emb.csv",
+    val_file_path="val_dataset_with_emb.csv",
+    test_file_path="test_dataset_with_emb.csv",
+    subset_count=0,
+    window_size_hours=WINDOW_SIZE_HOURS,
+    epochs=10,
+):
+    """Cross-validation / grid-logging mode: run grid over hyperparams and log per-config metrics.
+    Returns a pandas DataFrame with rows for each config x threshold.
+    """
     logger.info("Preparing windows for %s hours.", window_size_hours)
     df_train = load_and_prepare_data(
         train_file_path,
@@ -294,14 +318,194 @@ def run_diffusion(
 
     train_dataset = get_graph(author2idx, subreddit2idx, num_subreddits, df_train)
     val_dataset = get_graph(author2idx, subreddit2idx, num_subreddits, df_val)
+
+    # Hyperparameter grid search over parameters accepted by train_model
+    # (epochs, hidden_dim, dropout, num_heads, learning_rate)
+    epochs_list = [max(1, epochs // 2), epochs] if epochs > 1 else [epochs]
+    hidden_dims = [64, 128]
+    dropouts = [0.1, 0.3]
+    num_heads_list = [4, 8]
+    learning_rates = [1e-3, 1e-4]
+
+    logger.info("Starting hyperparameter logging over DCRNN grid...")
+
+    # Collect per-config-per-threshold results here
+    grid_results = []
+
+    for ep in epochs_list:
+        for hd in hidden_dims:
+            for do in dropouts:
+                for nh in num_heads_list:
+                    for lr in learning_rates:
+                        logger.info(
+                            "Training config: epochs=%d, hidden_dim=%d, dropout=%.2f, num_heads=%d, lr=%.4g",
+                            ep,
+                            hd,
+                            do,
+                            nh,
+                            lr,
+                        )
+
+                        model, crit = train_model(
+                            train_dataset,
+                            epochs=ep,
+                            hidden_dim=hd,
+                            dropout=do,
+                            num_heads=nh,
+                            learning_rate=lr,
+                        )
+
+                        # Evaluate this model on the validation set across thresholds
+                        df_val_config = pd.DataFrame(
+                            columns=[
+                                "threshold",
+                                "mse",
+                                "accuracy",
+                                "precision",
+                                "recall",
+                                "f1",
+                            ]
+                        )
+                        for threshold_candidate in range(20, 41, 2):
+                            evaluate_model(
+                                model,
+                                val_dataset,
+                                crit,
+                                threshold=threshold_candidate / 100,
+                                df_results=df_val_config,
+                                run_validation=True,
+                            )
+
+                        # Append each threshold row to grid_results with hyperparams
+                        if df_val_config.empty:
+                            logger.warning(
+                                "No validation results for config epochs=%s, hidden_dim=%s, dropout=%s, num_heads=%s, lr=%s",
+                                ep,
+                                hd,
+                                do,
+                                nh,
+                                lr,
+                            )
+                        else:
+                            for _, row in df_val_config.iterrows():
+                                grid_results.append(
+                                    {
+                                        "epochs": ep,
+                                        "hidden_dim": hd,
+                                        "dropout": do,
+                                        "num_heads": nh,
+                                        "learning_rate": lr,
+                                        "threshold": row["threshold"],
+                                        "mse": row["mse"],
+                                        "accuracy": row["accuracy"],
+                                        "precision": row["precision"],
+                                        "recall": row["recall"],
+                                        "f1": row["f1"],
+                                    }
+                                )
+
+                        # free intermediate model to avoid holding memory
+                        try:
+                            del model
+                            del crit
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+                        except Exception:
+                            pass
+
+    # Create a single DataFrame with all grid results and return it
+    df_grid_results = pd.DataFrame(grid_results)
+    if df_grid_results.empty:
+        logger.warning("Grid search produced no results.")
+    else:
+        logger.info(
+            "Grid search completed. Results:\n%s", df_grid_results.to_markdown()
+        )
+        # Optionally persist
+        # df_grid_results.to_csv("dcrnn_grid_results.csv", index=False)
+
+    return df_grid_results, avg_probs
+
+
+def run_diffusion_train_test(
+    generate_embeddings=False,
+    train_file_path="train_dataset_with_emb.csv",
+    val_file_path="val_dataset_with_emb.csv",
+    test_file_path="test_dataset_with_emb.csv",
+    subset_count=0,
+    window_size_hours=WINDOW_SIZE_HOURS,
+    epochs=10,
+):
+    """Plain train/test: trains a single model on train set and evaluates on validation to pick threshold, then evaluates on test set."""
+    logger.info("Preparing windows for %s hours.", window_size_hours)
+    df_train = load_and_prepare_data(
+        train_file_path,
+        window_size_hours,
+        generate_embeddings=generate_embeddings,
+        subset_count=subset_count,
+    )
+    logger.info("Loaded training data with %d rows.", len(df_train))
+    df_test = load_and_prepare_data(
+        test_file_path,
+        window_size_hours,
+        generate_embeddings=generate_embeddings,
+        subset_count=subset_count,
+    ).head(10000)
+    logger.info("Loaded testing data with %d rows.", len(df_test))
+
+    df_val = load_and_prepare_data(
+        val_file_path,
+        window_size_hours,
+        generate_embeddings=generate_embeddings,
+        subset_count=subset_count,
+    ).head(10000)
+    logger.info("Loaded validation data with %d rows.", len(df_val))
+
+    df_combined = pd.concat([df_train, df_test, df_val], ignore_index=True)
+    author2idx, subreddit2idx, num_subreddits = build_node_mappings(df_combined)
+
+    train_dataset = get_graph(author2idx, subreddit2idx, num_subreddits, df_train)
+    val_dataset = get_graph(author2idx, subreddit2idx, num_subreddits, df_val)
     test_dataset = get_graph(author2idx, subreddit2idx, num_subreddits, df_test)
+
     df_val = pd.DataFrame(
         columns=["threshold", "mse", "accuracy", "precision", "recall", "f1_score"]
     )
     df_results = df_val.copy()
-    dcrnn_model, criterion = train_model(train_dataset, epochs=epochs)
 
-    for threshold_candidate in range(20, 61, 4):
+    # Extract model / evaluation parameters into variables
+
+    train_hidden_dim = 128
+    train_dropout = 0.1
+    train_num_heads = 4
+    train_learning_rate = 0.0001
+
+    logger.info(
+        "Training with fixed params: epochs=%d, hidden_dim=%d, dropout=%.2f, num_heads=%d, lr=%.4g",
+        epochs,
+        train_hidden_dim,
+        train_dropout,
+        train_num_heads,
+        train_learning_rate,
+    )
+
+    dcrnn_model, criterion = train_model(
+        train_dataset,
+        epochs=epochs,
+        hidden_dim=train_hidden_dim,
+        dropout=train_dropout,
+        num_heads=train_num_heads,
+        learning_rate=train_learning_rate,
+    )
+
+    # Use provided threshold for validation and test evaluation
+    provided_threshold = 0.4
+    # thresholds sweep variables (percent integer values)
+    val_thresh_start = 20
+    val_thresh_end = 61
+    val_thresh_step = 2
+
+    for threshold_candidate in range(val_thresh_start, val_thresh_end, val_thresh_step):
         evaluate_model(
             dcrnn_model,
             val_dataset,
@@ -312,13 +516,24 @@ def run_diffusion(
         )
 
     logger.info("Validation evaluations completed. Results:\n%s", df_val.to_markdown())
-    best_threshold = (
-        df_val[abs(df_val["accuracy"] - df_val["recall"]) <= 0.5]
-        .sort_values("recall", ascending=False)
-        .head(1)["threshold"]
-        .values[0]
-    )
-    logger.info("Best threshold selected: %.2f", best_threshold)
+
+    # Prefer the provided_threshold for final evaluation, but attempt to choose from validation
+    best_threshold = provided_threshold
+    try:
+        chosen = (
+            df_val[abs(df_val["accuracy"] - df_val["recall"]) <= 0.5]
+            .sort_values("recall", ascending=False)
+            .head(1)["threshold"]
+            .values[0]
+        )
+        if chosen is not None:
+            best_threshold = chosen
+    except Exception as e:
+        logger.debug(
+            "Could not compute chosen threshold from validation results: %s", e
+        )
+
+    logger.info("Using threshold %.2f for final test evaluation.", best_threshold)
     evaluate_model(
         dcrnn_model,
         test_dataset,
@@ -327,6 +542,8 @@ def run_diffusion(
         df_results=df_results,
     )
     logger.info("Completed all evaluations. Results:\n%s", df_results.to_markdown())
+
+    return df_results
 
 
 def run_classification(
