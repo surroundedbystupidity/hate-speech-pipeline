@@ -20,13 +20,13 @@ from hate_speech_pipeline.builder import (
     build_temporal_graph_local_diffusion,
     load_and_prepare_data,
 )
+from hate_speech_pipeline.model.temporal import BasicRecurrentGCN
 from hate_speech_pipeline.node_classifier import (
     create_static_graph_dataset,
     evaluate_static_model,
     load_and_prepare_static_data,
     train_static_gcn,
 )
-from model.temporal import BasicRecurrentGCN
 
 logging.basicConfig(
     level="INFO",
