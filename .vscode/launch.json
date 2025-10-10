@@ -1,0 +1,97 @@
+{
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Python Debugger: Current File",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Driver - Generate Embeddings",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "/Users/sujay/Documents/Workspace/hate-speech-pipeline/main.py",
+      "console": "integratedTerminal",
+      "args": [
+        "--train-file-path",
+        "retrain_train80.csv",
+        "--test-file-path",
+        "retrain_test10.csv",
+        "--val-file-path",
+        "retrain_validation10.csv",
+        "--subset-count",
+        "50000",
+        "--generate-embeddings",
+        "--epochs",
+        "20"
+      ]
+    },
+    {
+      "name": "Driver - No Embeddings",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "/Users/sujay/Documents/Workspace/hate-speech-pipeline/main.py",
+      "console": "integratedTerminal",
+      "args": [
+        "--train-file-path",
+        "retrain_train80_with_embeddings.csv",
+        "--test-file-path",
+        "retrain_test10_with_embeddings.csv",
+        "--val-file-path",
+        "retrain_validation10_with_embeddings.csv",
+        "--epochs",
+        "20",
+        "--subset-count",
+        "5000"
+      ]
+    },
+    {
+      "name": "Driver - Classification - No Embeddings",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "/Users/sujay/Documents/Workspace/hate-speech-pipeline/main.py",
+      "console": "integratedTerminal",
+      "args": [
+        "--mode",
+        "classification",
+        "--train-file-path",
+        "retrain_train80_with_embeddings.csv",
+        "--test-file-path",
+        "retrain_test10_with_embeddings.csv",
+        "--val-file-path",
+        "retrain_validation10_with_embeddings.csv",
+        "--epochs",
+        "20",
+        "--subset-count",
+        "50000"
+      ]
+    },
+    {
+      "name": "Driver - Classification - With Embeddings",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "/Users/sujay/Documents/Workspace/hate-speech-pipeline/main.py",
+      "console": "integratedTerminal",
+      "args": [
+        "--mode",
+        "classification",
+        "--train-file-path",
+        "retrain_train80.csv",
+        "--test-file-path",
+        "retrain_test10.csv",
+        "--val-file-path",
+        "retrain_validation10.csv",
+        "--epochs",
+        "20",
+        "--subset-count",
+        "50000",
+        "--generate-embeddings"
+      ]
+    }
+  ]
+}

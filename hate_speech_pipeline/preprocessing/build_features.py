@@ -2,7 +2,6 @@ import argparse
 import csv
 import gc
 import hashlib
-import math
 import os
 import sqlite3
 import time
@@ -13,7 +12,11 @@ import torch
 from sklearn.preprocessing import StandardScaler
 from transformers import AutoModelForSequenceClassification, AutoTokenizer, pipeline
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
+device = (
+    "cuda"
+    if torch.cuda.is_available()
+    else "mps" if torch.backends.mps.is_available() else "cpu"
+)
 torch.set_grad_enabled(False)
 
 inputs = {
@@ -147,7 +150,8 @@ def batched_predict(texts, bs=192, max_len=256, timing=False):
 
 def read_df_cp775(path, nrows=None, bad_lines_mode="skip"):
     # Try different encodings based on the file
-    encodings_to_try = ["utf-8", "cp775", "latin-1"]
+
+     = ["utf-8", "cp775", "latin-1"]
     df = None
 
     for encoding in encodings_to_try:

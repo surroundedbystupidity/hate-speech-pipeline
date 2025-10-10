@@ -60,6 +60,7 @@ pillow==11.3.0
 platformdirs==4.4.0
 plotly==6.3.0
 pluggy==1.6.0
+polars==1.33.1
 prompt_toolkit==3.0.52
 propcache==0.3.2
 psutil==7.1.0
@@ -91,13 +92,14 @@ setuptools==80.9.0
 six==1.17.0
 stack-data==0.6.3
 sympy==1.14.0
+tabulate==0.9.0
 texttable==1.7.0
 threadpoolctl==3.6.0
 tokenizers==0.22.1
 torch==2.8.0
 torch-geometric==2.6.1
 torch_cluster==1.6.3
-torch_geometric_temporal==0.56.2
+torch_geometric_temporal==0.56.0
 torch_scatter==2.1.2
 torch_sparse==0.6.18
 torch_spline_conv==1.2.2
@@ -114,3 +116,4 @@ urllib3==2.5.0
 wcwidth==0.2.14
 xyzservices==2025.4.0
 yarl==1.20.1
+zstandard==0.25.0
