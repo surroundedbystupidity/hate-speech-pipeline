@@ -1,5 +1,5 @@
 import logging
-import sys
+from copy import deepcopy
 
 import numpy as np
 import pandas as pd
@@ -14,7 +14,6 @@ from sklearn.metrics import (
 )
 from torch_geometric_temporal.signal import DynamicGraphTemporalSignal
 from tqdm import tqdm
-from copy import deepcopy
 
 from hate_speech_pipeline.builder import (
     build_node_mappings,
@@ -27,7 +26,7 @@ from hate_speech_pipeline.node_classifier import (
     load_and_prepare_static_data,
     train_static_gcn,
 )
-from hate_speech_pipeline.temporal_models import BasicRecurrentGCN
+from model.temporal import BasicRecurrentGCN
 
 logging.basicConfig(
     level="INFO",
@@ -210,11 +209,15 @@ def train_model(
                 for val_snapshot_idx, val_snapshot in enumerate(val_dataset):
                     # masks indicate which nodes to evaluate
                     mask = torch.tensor(
-                        val_dataset.masks[val_snapshot_idx], dtype=torch.bool, device=DEVICE
+                        val_dataset.masks[val_snapshot_idx],
+                        dtype=torch.bool,
+                        device=DEVICE,
                     )
                     if mask.sum() == 0:
                         continue
-                    logits = model(val_snapshot.x.to(DEVICE), val_snapshot.edge_index.to(DEVICE))
+                    logits = model(
+                        val_snapshot.x.to(DEVICE), val_snapshot.edge_index.to(DEVICE)
+                    )
                     masked_logits = logits[mask].view(-1)
                     masked_labels = val_snapshot.y.to(DEVICE)[mask].view(-1)
                     loss_val = criterion(masked_logits, masked_labels)
@@ -230,13 +233,21 @@ def train_model(
                 epochs_no_improve = 0
                 # save best model weights
                 best_state = deepcopy(model.state_dict())
-                logger.info("New best model found at epoch %d with val_loss=%.6f", epoch, val_loss)
+                logger.info(
+                    "New best model found at epoch %d with val_loss=%.6f",
+                    epoch,
+                    val_loss,
+                )
             else:
                 epochs_no_improve += 1
-                logger.debug("No improvement in val_loss for %d epochs", epochs_no_improve)
+                logger.debug(
+                    "No improvement in val_loss for %d epochs", epochs_no_improve
+                )
 
             if epochs_no_improve >= patience:
-                logger.info("Early stopping triggered (no improvement for %d epochs).", patience)
+                logger.info(
+                    "Early stopping triggered (no improvement for %d epochs).", patience
+                )
                 break
 
     # Restore best weights if requested
@@ -244,7 +255,9 @@ def train_model(
         model.load_state_dict(best_state)
 
     info = {
-        "early_stopped": epochs_no_improve >= patience if val_dataset is not None else False,
+        "early_stopped": (
+            epochs_no_improve >= patience if val_dataset is not None else False
+        ),
         "best_val_loss": best_val_loss if best_val_loss != float("inf") else None,
         "stopped_after_epochs_no_improve": epochs_no_improve,
     }
@@ -430,9 +443,13 @@ def run_diffusion_cv(
                         if info.get("early_stopped") and save_path:
                             try:
                                 torch.save(model.state_dict(), save_path)
-                                logger.info("Saved early-stopped model to %s", save_path)
+                                logger.info(
+                                    "Saved early-stopped model to %s", save_path
+                                )
                             except Exception as e:
-                                logger.error("Failed to save model to %s: %s", save_path, e)
+                                logger.error(
+                                    "Failed to save model to %s: %s", save_path, e
+                                )
 
                         # Evaluate this model on the validation set across thresholds
                         df_val_config = pd.DataFrame(
@@ -601,14 +618,16 @@ def run_diffusion_train_test(
     avg_probs = []
 
     for threshold_candidate in range(val_thresh_start, val_thresh_end, val_thresh_step):
-        avg_probs.append(evaluate_model(
-            dcrnn_model,
-            val_dataset,
-            criterion,
-            threshold=threshold_candidate / 100,
-            df_results=df_val,
-            run_validation=True,
-        ))
+        avg_probs.append(
+            evaluate_model(
+                dcrnn_model,
+                val_dataset,
+                criterion,
+                threshold=threshold_candidate / 100,
+                df_results=df_val,
+                run_validation=True,
+            )
+        )
 
     logger.info("Validation evaluations completed. Results:\n%s", df_val.to_markdown())
 
@@ -630,7 +649,6 @@ def run_diffusion_train_test(
         logger.info("Average probs: %s", avg_probs)
         logger.info("Backup threshold = %.2f", np.mean(avg_probs) if avg_probs else 0)
         best_threshold = np.mean(avg_probs) if avg_probs else provided_threshold
-
 
     logger.info("Using threshold %.2f for final test evaluation.", best_threshold)
     evaluate_model(

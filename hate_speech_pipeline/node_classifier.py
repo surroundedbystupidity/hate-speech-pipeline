@@ -1,5 +1,4 @@
 import logging
-from datetime import datetime
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,7 +11,7 @@ from torch_geometric.data import Data
 from tqdm import tqdm
 
 from hate_speech_pipeline.builder import generate_comment_embeddings
-from hate_speech_pipeline.static_models import StaticGCN
+from hate_speech_pipeline.model.static import StaticGCN
 
 logging.basicConfig(
     level="INFO",

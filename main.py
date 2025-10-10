@@ -1,6 +1,5 @@
 import argparse
 import logging
-from math import e
 
 from hate_speech_pipeline.driver import run
 
